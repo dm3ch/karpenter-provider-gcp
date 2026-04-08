@@ -19,29 +19,19 @@ package pricing
 import (
 	"context"
 	_ "embed"
-	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
-	utilsobject "github.com/cloudpilot-ai/karpenter-provider-gcp/pkg/utils/object"
+	"github.com/cloudpilot-ai/karpenter-provider-gcp/pkg/providers/pricing/instanceprice"
 )
 
-//go:embed initial-on-demand-prices.json
-var initialOnDemandPricesData []byte
-
-const (
-	// TODO: Get rid of 3rd party API for pricing: https://github.com/cloudpilot-ai/karpenter-provider-gcp/issues/33
-	pricingCSVURL = "https://gcloud-compute.com/machine-types-regions.csv"
-	// Default timeout for downloading the CSV
-	pricingCSVTimeout = 24 * time.Hour
-	// Price cache key
-	pricingCSVCacheKey = "pricing-csv"
-)
+//go:embed initial-prices.json
+var initialPricesData []byte
 
 type Provider interface {
 	LivenessProbe(*http.Request) error
@@ -51,14 +41,25 @@ type Provider interface {
 	UpdatePrices(context.Context) error
 }
 
-type pricesStorage = map[string]float64
+type pricesStorage map[string]float64
+
+// initialPricesFile matches the price_validate computed.json / update-pricing CI
+// output format so that make update-pricing can copy that file directly.
+type initialPricesFile struct {
+	SavedAt time.Time                          `json:"saved_at"`
+	Prices  map[string]map[string]initialPrice `json:"prices"`
+}
+
+type initialPrice struct {
+	OnDemand float64 `json:"on_demand"`
+	Spot     float64 `json:"spot"`
+}
 
 type DefaultProvider struct {
 	region string
 
-	muOnDemand     sync.RWMutex
+	mu             sync.RWMutex
 	onDemandPrices pricesStorage
-	muSpot         sync.RWMutex
 	spotPrices     pricesStorage
 }
 
@@ -68,43 +69,54 @@ func NewDefaultProvider(ctx context.Context, region string) (*DefaultProvider, e
 		onDemandPrices: make(pricesStorage),
 		spotPrices:     make(pricesStorage),
 	}
-
-	// sets the pricing data from the static default state for the provider
-	err := p.Reset()
-	return p, err
+	if err := p.Reset(); err != nil {
+		return nil, err
+	}
+	log.FromContext(ctx).Info("Loaded initial prices", "region", region, "count", len(p.onDemandPrices))
+	return p, nil
 }
 
+// Reset loads on-demand prices from the embedded initial-prices.json.
+// Spot prices are intentionally not loaded — the embedded file is refreshed
+// weekly and spot prices change too rapidly to be useful as a fallback.
+// All parsing happens outside the lock; only the final swap is guarded.
 func (p *DefaultProvider) Reset() error {
-	p.muOnDemand.Lock()
-	defer p.muOnDemand.Unlock()
+	var data initialPricesFile
+	if err := json.Unmarshal(initialPricesData, &data); err != nil {
+		return fmt.Errorf("parsing initial-prices.json: %w", err)
+	}
 
-	// Parse the JSON data
-	parsedJSON := *utilsobject.JSONUnmarshal[map[string]pricesStorage](initialOnDemandPricesData)
-	// Read prices for the region
-	p.onDemandPrices = parsedJSON[p.region]
-	if len(p.onDemandPrices) == 0 {
+	regionPrices, ok := data.Prices[p.region]
+	if !ok || len(regionPrices) == 0 {
 		return fmt.Errorf("no initial prices found for region %s", p.region)
 	}
 
-	log.FromContext(context.TODO()).Info("Loaded initial on-demand prices", "region", p.region, "count", len(p.onDemandPrices))
+	od := make(pricesStorage, len(regionPrices))
+	for name, ip := range regionPrices {
+		od[name] = ip.OnDemand
+	}
+
+	p.mu.Lock()
+	p.onDemandPrices = od
+	p.spotPrices = make(pricesStorage)
+	p.mu.Unlock()
 	return nil
 }
 
 func (p *DefaultProvider) LivenessProbe(_ *http.Request) error {
-	// ensure we don't deadlock and nolint for the empty critical section
-	p.muOnDemand.Lock()
-	p.muSpot.Lock()
-	//nolint: staticcheck
-	p.muOnDemand.Unlock()
-	p.muSpot.Unlock()
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if len(p.onDemandPrices) == 0 {
+		return fmt.Errorf("pricing provider has no on-demand prices loaded")
+	}
 	return nil
 }
 
 func (p *DefaultProvider) InstanceTypes() []string {
-	p.muOnDemand.RLock()
-	defer p.muOnDemand.RUnlock()
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
-	types := make([]string, len(p.onDemandPrices))
+	types := make([]string, 0, len(p.onDemandPrices))
 	for t := range p.onDemandPrices {
 		types = append(types, t)
 	}
@@ -112,130 +124,61 @@ func (p *DefaultProvider) InstanceTypes() []string {
 }
 
 func (p *DefaultProvider) OnDemandPrice(instanceType string) (float64, bool) {
-	p.muOnDemand.RLock()
-	defer p.muOnDemand.RUnlock()
+	p.mu.RLock()
+	defer p.mu.RUnlock()
 
 	price, ok := p.onDemandPrices[instanceType]
 	return price, ok
 }
 
-// Zone parameter is ignored, cause in GCP prices are regional
+// SpotPrice ignores zone (GCP prices are regional).
+// Falls back to 40% of on-demand when no spot price is known.
 func (p *DefaultProvider) SpotPrice(instanceType string, _ string) (float64, bool) {
-	p.muSpot.RLock()
-	price, ok := p.spotPrices[instanceType]
-	p.muSpot.RUnlock()
-	if ok {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	if price, ok := p.spotPrices[instanceType]; ok {
 		return price, true
 	}
-	// Fallback to on-demand price with a default spot discount (e.g., 60%) if spot price is unknown
-	if odPrice, ok := p.OnDemandPrice(instanceType); ok {
+	if odPrice, ok := p.onDemandPrices[instanceType]; ok {
 		return odPrice * 0.4, true
 	}
 	return 0, false
 }
 
-func (p *DefaultProvider) downloadCSV(ctx context.Context) ([][]string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, pricingCSVURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("creating request: %w", err)
-	}
-
-	// Download the CSV file
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("downloading CSV: %w", err)
-	}
-	defer resp.Body.Close()
-
-	// Read all CSV data
-	reader := csv.NewReader(resp.Body)
-	reader.Comma = ','
-	records, err := reader.ReadAll()
-	if err != nil {
-		return nil, fmt.Errorf("reading CSV: %w", err)
-	}
-
-	if len(records) < 2 {
-		return nil, fmt.Errorf("CSV file is empty or has no data")
-	}
-
-	return records, nil
-}
-
+// UpdatePrices fetches fresh prices from the upstream source.
+// A new Client is created on each call so cached data from the previous run
+// is discarded and prices are always fetched fresh.
+// All map building happens outside the lock; only the final swap is guarded.
 func (p *DefaultProvider) UpdatePrices(ctx context.Context) error {
-	newRecords, err := p.downloadCSV(ctx)
+	client, err := instanceprice.New(ctx)
 	if err != nil {
-		return err
+		return fmt.Errorf("creating instanceprice client: %w", err)
 	}
-	if len(newRecords) < 2 {
-		log.FromContext(ctx).Error(err, "CSV file is empty or has no data")
-		return fmt.Errorf("CSV file is empty or has no data")
-	}
+	defer client.Close()
 
-	onDemandPrices, spotPrices, err := resolvePrice(newRecords, p.region)
+	prices, err := client.FetchPrices(ctx, p.region)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "Error resolving prices")
-		return err
+		return fmt.Errorf("fetching prices for %s: %w", p.region, err)
+	}
+	if len(prices) == 0 {
+		return fmt.Errorf("no prices retrieved for region %s", p.region)
 	}
 
-	if len(onDemandPrices) == 0 {
-		return fmt.Errorf("no prices retrieved during update")
+	od := make(pricesStorage, len(prices))
+	spot := make(pricesStorage, len(prices))
+	for _, mp := range prices {
+		od[mp.Name] = mp.OnDemandPerHour
+		if mp.SpotPerHour > 0 {
+			spot[mp.Name] = mp.SpotPerHour
+		}
 	}
 
-	p.muOnDemand.Lock()
-	p.muSpot.Lock()
-	defer p.muOnDemand.Unlock()
-	defer p.muSpot.Unlock()
+	p.mu.Lock()
+	p.onDemandPrices = od
+	p.spotPrices = spot
+	p.mu.Unlock()
 
-	p.onDemandPrices = onDemandPrices
-	p.spotPrices = spotPrices
+	log.FromContext(ctx).Info("Updated prices", "region", p.region, "onDemand", len(od), "spot", len(spot))
 	return nil
-}
-
-func resolvePrice(newRecords [][]string, region string) (pricesStorage, pricesStorage, error) {
-	// Find required columns
-	header := newRecords[0]
-	var onDemandPriceColumn, spotPriceColumn, regionCol, nameCol int
-	for i, col := range header {
-		switch col {
-		case "hour":
-			onDemandPriceColumn = i
-		case "hourSpot":
-			spotPriceColumn = i
-		case "region":
-			regionCol = i
-		case "name":
-			nameCol = i
-		}
-	}
-
-	// Process the data
-	onDemandPrices := make(pricesStorage)
-	spotPrices := make(pricesStorage)
-
-	for _, record := range newRecords[1:] {
-		// Skip records that don't match our region
-		if record[regionCol] != region {
-			continue
-		}
-
-		machineType := record[nameCol]
-		onDemandPriceStr := record[onDemandPriceColumn]
-		spotPriceStr := record[spotPriceColumn]
-
-		onDemandPrice, err := strconv.ParseFloat(onDemandPriceStr, 64)
-		if err != nil {
-			return nil, nil, fmt.Errorf("error parsing on-demand price: %w", err)
-		}
-
-		spotPrice, err := strconv.ParseFloat(spotPriceStr, 64)
-		if err != nil {
-			return nil, nil, fmt.Errorf("error parsing spot price: %w", err)
-		}
-
-		onDemandPrices[machineType] = onDemandPrice
-		spotPrices[machineType] = spotPrice
-	}
-
-	return onDemandPrices, spotPrices, nil
 }
