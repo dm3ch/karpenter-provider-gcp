@@ -1,0 +1,94 @@
+/*
+Copyright 2026 The CloudPilot AI Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+	http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"os"
+	"path/filepath"
+	"time"
+)
+
+// httpClient is shared across all reference-source fetches in the tool.
+// http.DefaultClient has no timeout; a hung server would block the tool
+// (and CI) indefinitely.
+var httpClient = &http.Client{Timeout: 30 * time.Second}
+
+// price holds on-demand and spot hourly prices; zero means unavailable.
+type price struct {
+	OnDemand float64 `json:"on_demand,omitempty"`
+	Spot     float64 `json:"spot,omitempty"`
+}
+
+type MachinePrices map[string]price
+type RegionPrices map[string]MachinePrices
+
+// RegionAvailability records which machine types are available (returned by
+// the Compute Engine API) in each region. Used to distinguish "not deployed
+// in region" (UNAVAIL) from "deployed but no price computed" (MISSING).
+// Nil disables the UNAVAIL classification.
+type RegionAvailability map[string]map[string]bool
+
+type priceFile struct {
+	SavedAt time.Time    `json:"saved_at"`
+	Prices  RegionPrices `json:"prices"`
+}
+
+func readPriceFile(path string) (*priceFile, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var priceData priceFile
+	if err := json.NewDecoder(f).Decode(&priceData); err != nil {
+		return nil, fmt.Errorf("decoding %s: %w", path, err)
+	}
+	return &priceData, nil
+}
+
+func writePriceFile(path string, prices RegionPrices) error {
+	priceData := &priceFile{SavedAt: time.Now().UTC(), Prices: prices}
+	data, err := json.Marshal(priceData)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0644)
+}
+
+func loadOrFetch(path string, noCache bool, ttl time.Duration, fetch func() (RegionPrices, error)) (RegionPrices, error) {
+	name := filepath.Base(path)
+	if !noCache {
+		if pf, err := readPriceFile(path); err == nil {
+			if age := time.Since(pf.SavedAt); age < ttl {
+				fmt.Printf("  %-14s using cache (%.1fh old)\n", name+":", age.Hours())
+				return pf.Prices, nil
+			}
+		}
+	}
+	prices, err := fetch()
+	if err != nil {
+		return nil, err
+	}
+	if err := writePriceFile(path, prices); err != nil {
+		return nil, fmt.Errorf("saving %s: %w", name, err)
+	}
+	fmt.Printf("  %-14s %d regions\n", name+":", len(prices))
+	return prices, nil
+}

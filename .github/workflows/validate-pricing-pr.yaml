@@ -1,0 +1,56 @@
+# Pricing accuracy gate for pull requests.
+#
+# Runs price_validate against a single region whenever pricing code or the
+# validation tool itself changes. A single-region run completes in ~30 s and
+# catches broken SKU matching, wrong coefficients, or missing machine types
+# before they merge.
+#
+# Required repository configuration (shared with update-pricing.yaml):
+#   Secret   GCP_PRICING_SA_KEY   — service account key JSON
+#   Variable GCP_PRICING_PROJECT  — GCP project ID
+#
+# The service account only needs read-only roles:
+#   roles/billing.viewer   — read SKU prices from the Billing Catalog API
+#   roles/compute.viewer   — read machine type specs and region list
+name: Validate pricing (PR)
+
+on:
+  pull_request:
+    paths:
+      - 'pkg/providers/pricing/**'
+      - 'hack/tools/price_validate/**'
+  workflow_dispatch:
+    inputs:
+      region:
+        description: 'Region to validate (default: us-central1)'
+        default: 'us-central1'
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  validate-pricing:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_PRICING_SA_KEY }}
+
+      - name: Set GCP project
+        run: echo "GOOGLE_CLOUD_PROJECT=${{ vars.GCP_PRICING_PROJECT }}" >> $GITHUB_ENV
+
+      - name: Run price validation
+        run: |
+          region="${{ inputs.region || 'us-central1' }}"
+          go run ./hack/tools/price_validate --region="${region}" --no-cache

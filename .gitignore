@@ -46,3 +46,13 @@ TODO.md
 demo
 
 _go
+
+# AI tools
+CLAUDE.md
+.claude
+.sisyphus/
+
+# price_validate cache, output, and compiled binary
+hack/tools/price_validate/data/
+data/
+/price_validate
