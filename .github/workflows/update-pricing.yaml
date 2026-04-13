@@ -10,9 +10,13 @@
 #   Secret  GCP_PRICING_SA_KEY     — service account key JSON
 #   Variable GCP_PRICING_PROJECT   — GCP project ID
 #
-# A free-tier GCP project is sufficient. The service account only needs:
-#   roles/billing.viewer  — read SKU prices from the Billing Catalog API
-#   roles/compute.viewer  — read machine type specs and region list
+# A free-tier GCP project is sufficient. Required setup:
+#   gcloud services enable cloudbilling.googleapis.com compute.googleapis.com
+#
+# The service account only needs:
+#   roles/compute.viewer  — read machine type specs and region list (#218)
+# Note: the Cloud Billing Catalog API (SKU prices) is public — no IAM role
+# is required to list SKUs. roles/billing.viewer is NOT needed.
 name: Update pricing data
 
 on:
@@ -63,8 +67,11 @@ jobs:
           cp "${{ steps.validate.outputs.workdir }}/computed.json" pkg/providers/pricing/initial-prices.json
 
       - name: Prepare PR body
-        env:
-          VALIDATE_OUTPUT: ${{ steps.validate.outputs.workdir }}/output.txt
+        # TODO(#218): re-enable validation output once SKU-based pricing lands;
+        # currently disabled because the Cyclenerd-vs-Cyclenerd comparison
+        # produces a trivially-matching but very large output that bloats the PR.
+        # env:
+        #   VALIDATE_OUTPUT: ${{ steps.validate.outputs.workdir }}/output.txt
         run: |
           {
             echo 'Automated refresh of `pkg/providers/pricing/initial-prices.json`'
@@ -72,14 +79,14 @@ jobs:
             echo ''
             echo 'Review the diff to verify pricing changes are reasonable.'
             echo ''
-            echo '<details>'
-            echo '<summary>Price validation output</summary>'
-            echo ''
-            echo '```'
-            cat "${VALIDATE_OUTPUT}"
-            echo '```'
-            echo ''
-            echo '</details>'
+            # echo '<details>'
+            # echo '<summary>Price validation output</summary>'
+            # echo ''
+            # echo '```'
+            # cat "${VALIDATE_OUTPUT}"
+            # echo '```'
+            # echo ''
+            # echo '</details>'
           } > /tmp/pr-body.md
 
       - name: Create PR if pricing changed
