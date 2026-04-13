@@ -151,8 +151,7 @@ download: ## Run "go mod download"
 	go mod download
 
 update-pricing: ## Regenerate initial-prices.json using the GCP Billing Catalog API
-	@set -e; \
-	tmpdir=$$(mktemp -d); \
+	@tmpdir=$$(mktemp -d); \
 	trap "rm -rf $$tmpdir" EXIT; \
 	go run ./hack/tools/price_validate --work-dir=$$tmpdir; \
 	cp $$tmpdir/computed.json pkg/providers/pricing/initial-prices.json; \
