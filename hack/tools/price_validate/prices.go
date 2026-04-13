@@ -46,7 +46,7 @@ type RegionPrices map[string]MachinePrices
 type RegionAvailability map[string]map[string]bool
 
 type priceFile struct {
-	SavedAt time.Time    `json:"saved_at"`
+	SavedAt *time.Time   `json:"saved_at,omitempty"`
 	Prices  RegionPrices `json:"prices"`
 }
 
@@ -63,9 +63,11 @@ func readPriceFile(path string) (*priceFile, error) {
 	return &priceData, nil
 }
 
-func writePriceFile(path string, prices RegionPrices) error {
-	priceData := &priceFile{SavedAt: time.Now().UTC(), Prices: prices}
-	data, err := json.Marshal(priceData)
+// writePriceFile serialises prices to path. Pass a non-nil savedAt to embed a
+// timestamp (used for TTL cache files); pass nil to omit it (used for the
+// committed output file so that git diff only fires on actual price changes).
+func writePriceFile(path string, prices RegionPrices, savedAt *time.Time) error {
+	data, err := json.Marshal(&priceFile{SavedAt: savedAt, Prices: prices})
 	if err != nil {
 		return err
 	}
@@ -76,9 +78,11 @@ func loadOrFetch(path string, noCache bool, ttl time.Duration, fetch func() (Reg
 	name := filepath.Base(path)
 	if !noCache {
 		if pf, err := readPriceFile(path); err == nil {
-			if age := time.Since(pf.SavedAt); age < ttl {
-				fmt.Printf("  %-14s using cache (%.1fh old)\n", name+":", age.Hours())
-				return pf.Prices, nil
+			if pf.SavedAt != nil {
+				if age := time.Since(*pf.SavedAt); age < ttl {
+					fmt.Printf("  %-14s using cache (%.1fh old)\n", name+":", age.Hours())
+					return pf.Prices, nil
+				}
 			}
 		}
 	}
@@ -86,7 +90,8 @@ func loadOrFetch(path string, noCache bool, ttl time.Duration, fetch func() (Reg
 	if err != nil {
 		return nil, err
 	}
-	if err := writePriceFile(path, prices); err != nil {
+	now := time.Now().UTC()
+	if err := writePriceFile(path, prices, &now); err != nil {
 		return nil, fmt.Errorf("saving %s: %w", name, err)
 	}
 	fmt.Printf("  %-14s %d regions\n", name+":", len(prices))

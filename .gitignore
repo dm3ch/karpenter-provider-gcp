@@ -56,3 +56,6 @@ CLAUDE.md
 hack/tools/price_validate/data/
 data/
 /price_validate
+
+# google-github-actions/auth@v2 temporary credentials file
+gha-creds-*.json

@@ -23,7 +23,6 @@ import (
 	"fmt"
 	"net/http"
 	"sync"
-	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -46,8 +45,7 @@ type pricesStorage map[string]float64
 // initialPricesFile matches the price_validate computed.json / update-pricing CI
 // output format so that make update-pricing can copy that file directly.
 type initialPricesFile struct {
-	SavedAt time.Time                          `json:"saved_at"`
-	Prices  map[string]map[string]initialPrice `json:"prices"`
+	Prices map[string]map[string]initialPrice `json:"prices"`
 }
 
 type initialPrice struct {
