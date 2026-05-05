@@ -166,9 +166,11 @@ download: ## Run "go mod download"
 update-pricing:
 	@tmpdir=$$(mktemp -d); \
 	trap "rm -rf $$tmpdir" EXIT; \
-	go run ./hack/tools/price_validate --work-dir=$$tmpdir && \
+	go run ./hack/tools/price_validate --work-dir=$$tmpdir; \
+	rc=$$?; \
 	cp $$tmpdir/computed.json pkg/providers/pricing/initial-prices.json && \
-	echo "Updated pkg/providers/pricing/initial-prices.json"
+	echo "Updated pkg/providers/pricing/initial-prices.json"; \
+	exit $$rc
 
 codegen: ## Auto generate files based on GCP APIs
 	./hack/codegen.sh
