@@ -14,9 +14,11 @@ gcloud services enable cloudbilling.googleapis.com --project=<your-project-id>
 
 No new IAM roles are needed — listing public billing SKUs requires only valid GCP credentials, which the Karpenter service account already has.
 
-### Network config and tags
+---
 
-#### Network interfaces
+## Upgrading to vNext — network config and tags
+
+### Network interfaces
 
 Karpenter now builds the primary network interface from the cluster API (`cluster.NetworkConfig`) instead of copying it from a GKE node pool template. The network, subnetwork, and pod CIDR range are read directly from the cluster.
 
@@ -73,13 +75,13 @@ networkConfig:
 
 **Cluster-level private nodes** (`EnablePrivateNodes: true`) are now detected automatically — no NodeClass override is needed.
 
-#### New IAM permission: `container.clusters.get`
+### New IAM permission: `container.clusters.get`
 
 Karpenter now reads the cluster API at provisioning time (`container.projects.locations.clusters.get`) to derive network configuration. This requires the `container.clusters.get` IAM permission on the Karpenter service account.
 
 **Action required if you use a custom minimal IAM role** (not `roles/container.admin`): add `container.clusters.get` to the role. No action is needed if you use the predefined `roles/container.admin` role, which already includes this permission.
 
-#### Network tags
+### Network tags
 
 Previously, Karpenter merged all tags from the bootstrap node pool template with `spec.networkTags` in NodeClass. Now only two sources are used:
 
@@ -88,7 +90,11 @@ Previously, Karpenter merged all tags from the bootstrap node pool template with
 
 **Action required:** If your GKE node pool template carried additional tags used in firewall rules (e.g. pool-specific tags), add them explicitly to `spec.networkTags` in the relevant NodeClass.
 
-### GC controller and cluster identity labels
+---
+
+## Upgrading to vNext — GC controller and cluster identity labels
+
+### Background
 
 This release introduces a garbage-collection controller that automatically deletes GCE VM
 instances with no corresponding NodeClaim (orphaned instances that accumulate after missed
@@ -113,7 +119,9 @@ The upgrade itself requires no action. The steps below are **optional** and only
 if you want to clean up orphaned instances that may have accumulated before this release
 (see #242). Future orphaned instances on new-style nodes are handled automatically.
 
-#### Step 1 (optional) — rotate live nodes
+---
+
+### Step 1 (optional) — rotate live nodes
 
 Trigger a rolling replacement of your NodePools so that every replacement instance is
 stamped with `goog-k8s-cluster-location`. After this step, any remaining instance that
@@ -126,7 +134,9 @@ kubectl annotate nodepool <NODEPOOL_NAME> "karpenter.k8s.gcp/force-rollout=$(dat
 
 Repeat for each NodePool. Wait for all nodes to finish replacing before proceeding.
 
-#### Step 2 (optional) — find and delete orphaned instances
+---
+
+### Step 2 (optional) — find and delete orphaned instances
 
 List all instances with `goog-k8s-cluster-name` but without `goog-k8s-cluster-location`:
 
@@ -151,7 +161,7 @@ done
 
 ---
 
-## Upgrading to v0.2.0
+## Upgrading to v0.2.0 — instance family label change
 
 See [CHANGELOG.md](CHANGELOG.md#v020) for the breaking change to `karpenter.k8s.gcp/instance-family`
 requirements and the corresponding upgrade steps.
