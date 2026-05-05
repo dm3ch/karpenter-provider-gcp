@@ -1,5 +1,21 @@
 # Migration Guide
 
+## Upgrading to vNext — pricing API
+
+### New GCP API: Cloud Billing Catalog
+
+Karpenter now fetches machine type prices live from the [GCP Cloud Billing Catalog API](https://cloud.google.com/billing/docs/reference/rest) instead of using a bundled static CSV. This improves accuracy and keeps prices current without requiring a new Karpenter release.
+
+**Action required:** enable the Cloud Billing API in your GCP project:
+
+```sh
+gcloud services enable cloudbilling.googleapis.com --project=<your-project-id>
+```
+
+No new IAM roles are needed — listing public billing SKUs requires only valid GCP credentials, which the Karpenter service account already has.
+
+---
+
 ## Upgrading to vNext — network config and tags
 
 ### Network interfaces

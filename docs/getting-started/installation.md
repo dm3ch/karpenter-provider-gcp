@@ -12,7 +12,7 @@ This guide walks you through deploying Karpenter GCP on a GKE cluster using Helm
 Enable the required APIs:
 
 ```sh
-gcloud services enable compute.googleapis.com container.googleapis.com
+gcloud services enable compute.googleapis.com container.googleapis.com cloudbilling.googleapis.com
 ```
 
 ## Step 1 — Create a GCP service account
