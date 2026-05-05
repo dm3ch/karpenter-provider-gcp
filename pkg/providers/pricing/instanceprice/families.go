@@ -16,6 +16,19 @@ limitations under the License.
 
 package instanceprice
 
+import "strings"
+
+// standard returns a familyMatcherEntry for families whose GCP billing SKU
+// description uses the "<KEY_UPPER> Instance Core/Ram" pattern. Families with
+// AMD, Arm, Memory-optimized, or other non-standard prefixes need explicit entries.
+func standard(key string) familyMatcherEntry {
+	uk := strings.ToUpper(key)
+	return familyMatcherEntry{key, familyMatcher{
+		cpuPrefix: uk + " Instance Core",
+		ramPrefix: uk + " Instance Ram",
+	}}
+}
+
 // familyMatcher maps a machine type family prefix to the billing SKU description
 // prefixes used to identify its CPU and RAM SKUs.
 //
@@ -62,15 +75,15 @@ type familyMatcherEntry struct {
 //	"n2-custom-4-16384" → "n2"
 var familyMatchers = []familyMatcherEntry{
 	// General purpose — Intel/AMD
-	{"e2", familyMatcher{cpuPrefix: "E2 Instance Core", ramPrefix: "E2 Instance Ram"}},
+	standard("e2"),
 	{"n1", familyMatcher{cpuPrefix: "N1 Predefined Instance Core", ramPrefix: "N1 Predefined Instance Ram"}},
-	{"n2", familyMatcher{cpuPrefix: "N2 Instance Core", ramPrefix: "N2 Instance Ram"}},
+	standard("n2"),
 	{"n2d", familyMatcher{cpuPrefix: "N2D AMD Instance Core", ramPrefix: "N2D AMD Instance Ram"}},
-	{"n4", familyMatcher{cpuPrefix: "N4 Instance Core", ramPrefix: "N4 Instance Ram"}},
-	{"n4d", familyMatcher{cpuPrefix: "N4D Instance Core", ramPrefix: "N4D Instance Ram"}},
+	standard("n4"),
+	standard("n4d"),
 
 	// General purpose — Arm
-	{"n4a", familyMatcher{cpuPrefix: "N4A Instance Core", ramPrefix: "N4A Instance Ram"}},
+	standard("n4a"),
 	{"t2a", familyMatcher{cpuPrefix: "T2A Arm Instance Core", ramPrefix: "T2A Arm Instance Ram"}},
 
 	// Scale-out — AMD
@@ -86,10 +99,10 @@ var familyMatchers = []familyMatcherEntry{
 		ramAltPrefix: "Compute optimized Instance Ram",
 	}},
 	{"c2d", familyMatcher{cpuPrefix: "C2D AMD Instance Core", ramPrefix: "C2D AMD Instance Ram"}},
-	{"c3", familyMatcher{cpuPrefix: "C3 Instance Core", ramPrefix: "C3 Instance Ram"}},
-	{"c3d", familyMatcher{cpuPrefix: "C3D Instance Core", ramPrefix: "C3D Instance Ram"}},
-	{"c4", familyMatcher{cpuPrefix: "C4 Instance Core", ramPrefix: "C4 Instance Ram"}},
-	{"c4d", familyMatcher{cpuPrefix: "C4D Instance Core", ramPrefix: "C4D Instance Ram"}},
+	standard("c3"),
+	standard("c3d"),
+	standard("c4"),
+	standard("c4d"),
 
 	// Compute-optimized — Arm
 	{"c4a", familyMatcher{cpuPrefix: "C4A Arm Instance Core", ramPrefix: "C4A Arm Instance Ram"}},
@@ -107,21 +120,21 @@ var familyMatchers = []familyMatcherEntry{
 	}},
 	{"m1", familyMatcher{cpuPrefix: "Memory-optimized Instance Core", ramPrefix: "Memory-optimized Instance Ram"}},
 	{"m3", familyMatcher{cpuPrefix: "M3 Memory-optimized Instance Core", ramPrefix: "M3 Memory-optimized Instance Ram"}},
-	{"m4", familyMatcher{cpuPrefix: "M4 Instance Core", ramPrefix: "M4 Instance Ram"}},
+	standard("m4"),
 	{"m4ultramem224", familyMatcher{cpuPrefix: "M4Ultramem224 Instance Core", ramPrefix: "M4Ultramem224 Instance Ram"}},
 
 	// Accelerator-optimized
-	{"a2", familyMatcher{cpuPrefix: "A2 Instance Core", ramPrefix: "A2 Instance Ram"}},
-	{"a3", familyMatcher{cpuPrefix: "A3 Instance Core", ramPrefix: "A3 Instance Ram"}},
+	standard("a2"),
+	standard("a3"),
 	{"a3plus", familyMatcher{cpuPrefix: "A3Plus Instance Core", ramPrefix: "A3Plus Instance Ram"}},
 	{"a3ultra", familyMatcher{cpuPrefix: "A3Ultra Instance Core", ramPrefix: "A3Ultra Instance Ram"}},
-	{"g2", familyMatcher{cpuPrefix: "G2 Instance Core", ramPrefix: "G2 Instance Ram"}},
-	{"g4", familyMatcher{cpuPrefix: "G4 Instance Core", ramPrefix: "G4 Instance Ram"}},
+	standard("g2"),
+	standard("g4"),
 
 	// High-performance computing
-	{"h3", familyMatcher{cpuPrefix: "H3 Instance Core", ramPrefix: "H3 Instance Ram"}},
-	{"h4d", familyMatcher{cpuPrefix: "H4D Instance Core", ramPrefix: "H4D Instance Ram"}},
-	{"z3", familyMatcher{cpuPrefix: "Z3 Instance Core", ramPrefix: "Z3 Instance Ram"}},
+	standard("h3"),
+	standard("h4d"),
+	standard("z3"),
 }
 
 // prefixEntry pairs a key (accelerator type, machine family, or machine name)
