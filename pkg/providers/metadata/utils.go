@@ -313,6 +313,37 @@ func secondaryBootDiskLabel(name, projectID string, mode v1alpha1.SecondaryBootD
 	return fmt.Sprintf("%s-%s=%s.%s", GKESecondaryBootDiskLabelPrefix, name, mode, projectID)
 }
 
+// SetGPUAcceleratorLabel injects cloud.google.com/gke-accelerator=<gpuName> into kube-labels.
+// The NVIDIA device plugin DaemonSet uses this label as a nodeAffinity selector; without it the
+// plugin will not schedule onto Karpenter-provisioned GPU nodes.
+func SetGPUAcceleratorLabel(metadata *compute.Metadata, gpuName string) {
+	label := fmt.Sprintf("cloud.google.com/gke-accelerator=%s", gpuName)
+	for _, item := range metadata.Items {
+		if item.Key == "kube-labels" {
+			if strings.Contains(lo.FromPtr(item.Value), "gke-accelerator=") {
+				return
+			}
+			item.Value = lo.ToPtr(lo.FromPtr(item.Value) + "," + label)
+			return
+		}
+	}
+}
+
+// SetGPUDriverVersionLabel injects cloud.google.com/gke-gpu-driver-version=<version> into kube-labels.
+// GKE's GPU driver installer DaemonSet reads this label to select which driver to install.
+func SetGPUDriverVersionLabel(metadata *compute.Metadata, version string) {
+	label := fmt.Sprintf("cloud.google.com/gke-gpu-driver-version=%s", version)
+	for _, item := range metadata.Items {
+		if item.Key == "kube-labels" {
+			if strings.Contains(lo.FromPtr(item.Value), "gke-gpu-driver-version=") {
+				return
+			}
+			item.Value = lo.ToPtr(lo.FromPtr(item.Value) + "," + label)
+			return
+		}
+	}
+}
+
 // ApplyCustomMetadata applies custom metadata from GCENodeClass to the instance metadata.
 // If a metadata key already exists, it appends the value with comma separator.
 // Otherwise, it creates a new metadata item.

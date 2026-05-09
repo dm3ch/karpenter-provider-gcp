@@ -877,7 +877,22 @@ func (p *DefaultProvider) setupInstanceMetadata(instanceMetadata *compute.Metada
 	metadata.AppendSecondaryBootDisks(p.projectID, nodeClass, instanceMetadata)
 	metadata.ApplyCustomMetadata(instanceMetadata, nodeClass.Spec.Metadata)
 
+	setupGPUMetadata(instanceMetadata, nodeClass, instanceType)
+
 	return nil
+}
+
+// setupGPUMetadata injects GPU-specific labels into kube-labels for GPU instance types.
+// It is a no-op for non-GPU instances.
+func setupGPUMetadata(instanceMetadata *compute.Metadata, nodeClass *v1alpha1.GCENodeClass, instanceType *cloudprovider.InstanceType) {
+	if instanceType.Requirements.Get(v1alpha1.LabelInstanceGPUCount).Len() == 0 {
+		return
+	}
+	gpuName := instanceType.Requirements.Get(v1alpha1.LabelGKEAccelerator).Any()
+	metadata.SetGPUAcceleratorLabel(instanceMetadata, gpuName)
+	if nodeClass.Spec.GPUDriverVersion != "" {
+		metadata.SetGPUDriverVersionLabel(instanceMetadata, nodeClass.Spec.GPUDriverVersion)
+	}
 }
 
 // setupServiceAccounts configures service accounts for the instance

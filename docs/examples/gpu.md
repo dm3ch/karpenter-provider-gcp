@@ -2,16 +2,17 @@
 
 Request GPU resources via `nvidia.com/gpu` and select GPU-equipped instance families.
 
+Set `gpuDriverVersion` to control driver installation (defaults to `default`). See [GPU Nodes](../gpu-nodes.md) for details.
+
 ```yaml
 apiVersion: karpenter.k8s.gcp/v1alpha1
 kind: GCENodeClass
 metadata:
   name: gpu
 spec:
+  gpuDriverVersion: default   # or "latest" / "disabled"
   imageSelectorTerms:
     - alias: ContainerOptimizedOS@latest
-  metadata:
-    kube-labels: "cloud.google.com/gke-gpu-driver-version=latest"
   disks:
     - category: pd-balanced
       sizeGiB: 100

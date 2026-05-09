@@ -51,6 +51,7 @@ func init() {
 		LabelGKEReadinessMasqAgentReady,
 		LabelGKEReadinessNetdReady,
 		LabelGKEReadinessNodeLocalDNSReady,
+		LabelGKEAccelerator,
 	)
 }
 
@@ -90,6 +91,11 @@ var (
 	// allows Karpenter's DaemonSet overhead simulation (isDaemonPodCompatible) to
 	// include these DaemonSets when sizing instance types, preventing undersizing
 	// and node churn. See https://github.com/cloudpilot-ai/karpenter-provider-gcp/issues/202
+	// LabelGKEAccelerator is the GPU accelerator type label required by the NVIDIA device plugin
+	// DaemonSet's nodeAffinity. GKE injects it on native GPU node pools; Karpenter must inject
+	// it via kube-labels so the device plugin schedules onto provisioned GPU nodes.
+	LabelGKEAccelerator = "cloud.google.com/gke-accelerator"
+
 	LabelGKEReadinessCalicoReady           = "projectcalico.org/ds-ready"
 	LabelGKEReadinessKubeProxyReady        = "node.kubernetes.io/kube-proxy-ds-ready"
 	LabelGKEReadinessMetadataServerEnabled = "iam.gke.io/gke-metadata-server-enabled"
