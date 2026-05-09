@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+### GPU node provisioning (`gpuDriverVersion`)
+
+Karpenter now automatically injects the two labels required by the GKE GPU software stack
+into `kube-labels` at node boot time:
+
+- `cloud.google.com/gke-accelerator=<type>` — required by the NVIDIA device plugin DaemonSet.
+- `cloud.google.com/gke-gpu-driver-version=<value>` — read by the GKE GPU driver installer.
+
+The driver version is controlled by the new `spec.gpuDriverVersion` field on `GCENodeClass`
+(default: `"default"`, matching GKE's native behaviour).
+
+**Action required if you injected `cloud.google.com/gke-gpu-driver-version` manually via
+`GCENodeClass.spec.metadata`:** remove that entry and set `spec.gpuDriverVersion` instead.
+
+```yaml
+# Before
+spec:
+  metadata:
+    kube-labels: "...,cloud.google.com/gke-gpu-driver-version=default"
+
+# After
+spec:
+  gpuDriverVersion: default
+```
+
+**Note on NodePool labels:** Setting `cloud.google.com/gke-gpu-driver-version` in NodePool
+`spec.template.spec.labels` does **not** affect the label at boot time. NodePool template
+labels are applied post-registration, after the GPU driver installer has already run.
+Use `GCENodeClass.spec.gpuDriverVersion` to control which driver version GKE installs.
+
+---
+
 ## v0.3.0
 
 ### CRDs moved to a separate Helm chart (`karpenter-crd`)

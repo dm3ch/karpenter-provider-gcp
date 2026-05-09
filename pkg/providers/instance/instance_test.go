@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -1338,6 +1339,153 @@ func TestBuildInstance_GPUDriverVersionDisabled(t *testing.T) {
 	}
 	require.Contains(t, kubeLabels, "cloud.google.com/gke-gpu-driver-version=disabled",
 		"gke-gpu-driver-version=disabled must be injected to opt out of automatic driver installation")
+}
+
+func TestBuildInstance_GPUDriverVersionNotDoubleInjectedWhenTemplateHasLabel(t *testing.T) {
+	t.Parallel()
+
+	p := &DefaultProvider{}
+
+	gpuIT := &cloudprovider.InstanceType{
+		Name: "g2-standard-4",
+		Offerings: cloudprovider.Offerings{
+			{Available: true, Requirements: scheduling.NewRequirements(
+				scheduling.NewRequirement(karpv1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, karpv1.CapacityTypeOnDemand),
+			)},
+		},
+		Requirements: scheduling.NewRequirements(
+			scheduling.NewRequirement(corev1.LabelArchStable, corev1.NodeSelectorOpIn, "amd64"),
+			scheduling.NewRequirement(v1alpha1.LabelInstanceGPUCount, corev1.NodeSelectorOpIn, "1"),
+			scheduling.NewRequirement(v1alpha1.LabelGKEAccelerator, corev1.NodeSelectorOpIn, "nvidia-l4"),
+		),
+		Overhead: &cloudprovider.InstanceTypeOverhead{KubeReserved: corev1.ResourceList{}},
+	}
+
+	// kube-labels already carries gke-gpu-driver-version (as a future GKE GPU node pool template
+	// could). Karpenter must not inject a second occurrence even though NodeClass requests a
+	// different value.
+	template := &compute.InstanceTemplate{
+		Properties: &compute.InstanceProperties{
+			Scheduling:        &compute.Scheduling{},
+			NetworkInterfaces: []*compute.NetworkInterface{},
+			Metadata: &compute.Metadata{
+				Items: []*compute.MetadataItems{
+					{Key: "kube-labels", Value: ptr.To("max-pods-per-node=110,max-pods=110,cloud.google.com/gke-gpu-driver-version=default")},
+					{Key: "kube-env", Value: ptr.To("KUBELET_ARGS: --max-pods=110\ngke-provisioning=standard\n")},
+					{Key: "kubelet-config", Value: ptr.To("nodeStatusUpdateFrequency: 10s\n")},
+				},
+			},
+		},
+	}
+
+	nc := &v1alpha1.GCENodeClass{Spec: v1alpha1.GCENodeClassSpec{GPUDriverVersion: "latest"}}
+	cluster := makeCluster("net", "subnet", "pods", false)
+	instance, err := p.buildInstance(
+		spotOrOnDemandNodeClaim(),
+		nc,
+		gpuIT,
+		template,
+		cluster,
+		"default-pool", "us-central1-a", "karpenter-gpu-test",
+		karpv1.CapacityTypeOnDemand,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, instance)
+	var kubeLabels string
+	for _, item := range instance.Metadata.Items {
+		if item.Key == "kube-labels" {
+			kubeLabels = ptr.Deref(item.Value, "")
+			break
+		}
+	}
+	require.Equal(t, 1, strings.Count(kubeLabels, "gke-gpu-driver-version="),
+		"gke-gpu-driver-version must appear exactly once even when already present in the template")
+}
+
+// TestBuildInstance_NodePoolLabelDoesNotOverrideGPUDriverAtBootTime documents a known limitation:
+// setting cloud.google.com/gke-gpu-driver-version in NodePool spec.template.spec.labels does not
+// affect kube-labels at boot time. NodePool template labels are synced onto the Node object
+// post-registration (via syncNode), after the GPU driver installer has already run.
+// Use GCENodeClass.spec.gpuDriverVersion to control which driver version GKE installs.
+func TestBuildInstance_NodePoolLabelDoesNotOverrideGPUDriverAtBootTime(t *testing.T) {
+	t.Parallel()
+
+	p := &DefaultProvider{}
+
+	gpuIT := &cloudprovider.InstanceType{
+		Name: "g2-standard-4",
+		Offerings: cloudprovider.Offerings{
+			{Available: true, Requirements: scheduling.NewRequirements(
+				scheduling.NewRequirement(karpv1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, karpv1.CapacityTypeOnDemand),
+			)},
+		},
+		Requirements: scheduling.NewRequirements(
+			scheduling.NewRequirement(corev1.LabelArchStable, corev1.NodeSelectorOpIn, "amd64"),
+			scheduling.NewRequirement(v1alpha1.LabelInstanceGPUCount, corev1.NodeSelectorOpIn, "1"),
+			scheduling.NewRequirement(v1alpha1.LabelGKEAccelerator, corev1.NodeSelectorOpIn, "nvidia-l4"),
+		),
+		Overhead: &cloudprovider.InstanceTypeOverhead{KubeReserved: corev1.ResourceList{}},
+	}
+
+	template := &compute.InstanceTemplate{
+		Properties: &compute.InstanceProperties{
+			Scheduling:        &compute.Scheduling{},
+			NetworkInterfaces: []*compute.NetworkInterface{},
+			Metadata: &compute.Metadata{
+				Items: []*compute.MetadataItems{
+					{Key: "kube-labels", Value: ptr.To("max-pods-per-node=110,max-pods=110")},
+					{Key: "kube-env", Value: ptr.To("KUBELET_ARGS: --max-pods=110\ngke-provisioning=standard\n")},
+					{Key: "kubelet-config", Value: ptr.To("nodeStatusUpdateFrequency: 10s\n")},
+				},
+			},
+		},
+	}
+
+	// NodePool spec.template.spec.labels flow into NodeClaim.Labels at scheduling time.
+	nodeClaim := &karpv1.NodeClaim{
+		ObjectMeta: metav1.ObjectMeta{
+			Labels: map[string]string{
+				karpv1.NodePoolLabelKey:                    "gpu-pool",
+				"cloud.google.com/gke-gpu-driver-version": "latest",
+			},
+		},
+		Spec: karpv1.NodeClaimSpec{
+			Requirements: []karpv1.NodeSelectorRequirementWithMinValues{
+				{
+					Key:      karpv1.CapacityTypeLabelKey,
+					Operator: corev1.NodeSelectorOpIn,
+					Values:   []string{karpv1.CapacityTypeOnDemand},
+				},
+			},
+		},
+	}
+
+	nc := &v1alpha1.GCENodeClass{Spec: v1alpha1.GCENodeClassSpec{GPUDriverVersion: "default"}}
+	cluster := makeCluster("net", "subnet", "pods", false)
+	instance, err := p.buildInstance(
+		nodeClaim,
+		nc,
+		gpuIT,
+		template,
+		cluster,
+		"default-pool", "us-central1-a", "karpenter-gpu-test",
+		karpv1.CapacityTypeOnDemand,
+	)
+
+	require.NoError(t, err)
+	require.NotNil(t, instance)
+	var kubeLabels string
+	for _, item := range instance.Metadata.Items {
+		if item.Key == "kube-labels" {
+			kubeLabels = ptr.Deref(item.Value, "")
+			break
+		}
+	}
+	// NodeClass value ("default") is injected; the NodePool label ("latest") has no effect at boot.
+	require.Contains(t, kubeLabels, "cloud.google.com/gke-gpu-driver-version=default")
+	require.Equal(t, 1, strings.Count(kubeLabels, "gke-gpu-driver-version="),
+		"NodePool label must not add a second gke-gpu-driver-version entry; use GCENodeClass.spec.gpuDriverVersion")
 }
 
 // instanceLabelsFixture returns the common NodeClaim and GCENodeClass objects used
