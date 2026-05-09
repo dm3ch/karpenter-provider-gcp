@@ -34,11 +34,12 @@ import (
 )
 
 var (
-	maxPodsPerNodeRegex  = regexp.MustCompile(`max-pods-per-node=\d+`)
-	maxPodsRegex         = regexp.MustCompile(`max-pods=\d+`)
-	gkeProvisioningRegex = regexp.MustCompile(`gke-provisioning=\w+`)
-	kubeEnvArchRegex     = regexp.MustCompile(`\barch=(amd64|arm64)\b`)
-	kubeEnvFamilyRegex   = regexp.MustCompile(`cloud\.google\.com/machine-family=[^,;\s]+`)
+	maxPodsPerNodeRegex     = regexp.MustCompile(`max-pods-per-node=\d+`)
+	maxPodsRegex            = regexp.MustCompile(`max-pods=\d+`)
+	gkeProvisioningRegex    = regexp.MustCompile(`gke-provisioning=\w+`)
+	kubeEnvArchRegex        = regexp.MustCompile(`\barch=(amd64|arm64)\b`)
+	kubeEnvFamilyRegex      = regexp.MustCompile(`cloud\.google\.com/machine-family=[^,;\s]+`)
+	registerWithTaintsRegex = regexp.MustCompile(`(--register-with-taints=)(\S+)`)
 )
 
 func GetClusterName(metadata *compute.Metadata) (string, error) {
@@ -193,6 +194,37 @@ func PatchUnregisteredTaints(metadata *compute.Metadata) error {
 	return nil
 }
 
+func AppendGPUTaint(metadata *compute.Metadata) error {
+	found := false
+	for _, item := range metadata.Items {
+		if item.Key == "kube-env" {
+			kubeEnv := lo.FromPtr(item.Value)
+			lines := strings.Split(kubeEnv, "\n")
+			for i, line := range lines {
+				if strings.HasPrefix(line, "KUBELET_ARGS:") {
+					found = true
+					if strings.Contains(line, GPUTaintArg) {
+						// already present, idempotent
+						continue
+					}
+					if registerWithTaintsRegex.MatchString(line) {
+						// Merge into the existing --register-with-taints value to avoid
+						// having two separate flags (kubelet only honors the last one).
+						lines[i] = registerWithTaintsRegex.ReplaceAllString(line, "${1}${2},"+GPUTaintArg)
+					} else {
+						lines[i] = line + " --register-with-taints=" + GPUTaintArg
+					}
+				}
+			}
+			item.Value = lo.ToPtr(strings.Join(lines, "\n"))
+		}
+	}
+	if !found {
+		return fmt.Errorf("KUBELET_ARGS not found in kube-env")
+	}
+	return nil
+}
+
 func PatchKubeEnvForInstanceType(metadata *compute.Metadata, instanceType *cloudprovider.InstanceType) error {
 	if metadata == nil || instanceType == nil {
 		return fmt.Errorf("metadata and instanceType must be non-nil")
@@ -311,6 +343,35 @@ func GetSecondaryDiskImageName(image string) string {
 
 func secondaryBootDiskLabel(name, projectID string, mode v1alpha1.SecondaryBootDiskMode) string {
 	return fmt.Sprintf("%s-%s=%s.%s", GKESecondaryBootDiskLabelPrefix, name, mode, projectID)
+}
+
+// SetGPUAcceleratorLabel injects the cloud.google.com/gke-accelerator=<gpuName> label
+// into kube-labels so the NVIDIA device plugin DaemonSet (which requires that label via
+// nodeAffinity) schedules onto Karpenter-provisioned GPU nodes.
+func SetGPUAcceleratorLabel(metadata *compute.Metadata, gpuName string) {
+	label := "cloud.google.com/gke-accelerator=" + gpuName
+	for _, item := range metadata.Items {
+		if item.Key == "kube-labels" {
+			if strings.Contains(lo.FromPtr(item.Value), "gke-accelerator=") {
+				return
+			}
+			item.Value = lo.ToPtr(lo.FromPtr(item.Value) + "," + label)
+		}
+	}
+}
+
+// SetGPUDriverVersionLabel injects cloud.google.com/gke-gpu-driver-version=<version>
+// into kube-labels. No-op if the label is already present.
+func SetGPUDriverVersionLabel(metadata *compute.Metadata, version string) {
+	label := "cloud.google.com/gke-gpu-driver-version=" + version
+	for _, item := range metadata.Items {
+		if item.Key == "kube-labels" {
+			if strings.Contains(lo.FromPtr(item.Value), "gke-gpu-driver-version=") {
+				return
+			}
+			item.Value = lo.ToPtr(lo.FromPtr(item.Value) + "," + label)
+		}
+	}
 }
 
 // ApplyCustomMetadata applies custom metadata from GCENodeClass to the instance metadata.
