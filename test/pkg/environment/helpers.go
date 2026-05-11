@@ -65,6 +65,10 @@ type TestCase struct {
 	// allowing any GPU instance family. Use when Families is empty to avoid
 	// restricting to a specific GPU family (useful when one family is in STOCKOUT).
 	GPUCountExists bool
+	// GPUCount, when non-empty, adds an instance-gpu-count: In [value] requirement.
+	// Use to restrict to instances with exactly N GPUs (e.g. "1" to stay within a
+	// GPUS_ALL_REGIONS quota of 1).
+	GPUCount string
 	// ImageFamily selects the OS image family for the NodeClass.
 	// Defaults to ContainerOptimizedOS when empty.
 	ImageFamily         string
@@ -261,6 +265,11 @@ func (e *Environment) createNodePool(ctx context.Context, name, nodeClassName st
 	if tc.GPUCountExists {
 		requirements = append(requirements, map[string]any{
 			"key": gcpv1alpha1.LabelInstanceGPUCount, "operator": "Exists",
+		})
+	}
+	if tc.GPUCount != "" {
+		requirements = append(requirements, map[string]any{
+			"key": gcpv1alpha1.LabelInstanceGPUCount, "operator": "In", "values": []any{tc.GPUCount},
 		})
 	}
 	templateSpec := map[string]any{
