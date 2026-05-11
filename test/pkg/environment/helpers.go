@@ -144,14 +144,15 @@ func (e *Environment) CreateNodeClassWithPrivateNetwork(ctx context.Context, nam
 
 // CreateNodeClassWithAutoGPUTaint creates a GCENodeClass with autoGPUTaint: true
 // and the GKE GPU driver auto-install label set. Used by GPU e2e tests.
-func (e *Environment) CreateNodeClassWithAutoGPUTaint(ctx context.Context, name string) {
+func (e *Environment) CreateNodeClassWithAutoGPUTaint(ctx context.Context, name, gpuDriverVersion string) {
 	deleteIfExists(ctx, e.DynamicClient, gceNodeClassGVR, name)
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "karpenter.k8s.gcp/v1alpha1",
 		"kind":       "GCENodeClass",
 		"metadata":   map[string]any{"name": name},
 		"spec": map[string]any{
-			"autoGPUTaint": true,
+			"autoGPUTaint":     true,
+			"gpuDriverVersion": gpuDriverVersion,
 			"imageSelectorTerms": []any{
 				map[string]any{"alias": "ContainerOptimizedOS@latest"},
 			},
