@@ -15,6 +15,40 @@ The service account resolution order is now:
 
 The fallback to the template's service account list has been removed. If your NodeClass and operator flag are both unset, provisioned nodes will use the Compute Engine default SA. This matches GKE's own default, but GKE recommends using a dedicated SA with minimal permissions ([`roles/container.nodeServiceAccount`](https://cloud.google.com/kubernetes-engine/docs/how-to/hardening-your-cluster#use_least_privilege_sa)) for production clusters. Set `DEFAULT_NODEPOOL_SERVICE_ACCOUNT` or `spec.serviceAccount` accordingly.
 
+---
+
+### GPU node provisioning (`gpuDriverVersion`)
+
+Karpenter now automatically injects the two labels required by the GKE GPU software stack
+into `kube-labels` at node boot time:
+
+- `cloud.google.com/gke-accelerator=<type>` — required by the NVIDIA device plugin DaemonSet.
+- `cloud.google.com/gke-gpu-driver-version=<value>` — read by the GKE GPU driver installer.
+
+The driver version is controlled by the new `spec.gpuDriverVersion` field on `GCENodeClass`
+(default: `"default"`, matching GKE's native behaviour).
+
+**Action required if you injected `cloud.google.com/gke-gpu-driver-version` manually via
+`GCENodeClass.spec.metadata`:** remove that entry and set `spec.gpuDriverVersion` instead.
+
+```yaml
+# Before
+spec:
+  metadata:
+    kube-labels: "...,cloud.google.com/gke-gpu-driver-version=default"
+
+# After
+spec:
+  gpuDriverVersion: default
+```
+
+**Note on NodePool labels:** Setting `cloud.google.com/gke-gpu-driver-version` in NodePool
+`spec.template.spec.labels` does **not** affect the label at boot time. NodePool template
+labels are applied post-registration, after the GPU driver installer has already run.
+Use `GCENodeClass.spec.gpuDriverVersion` to control which driver version GKE installs.
+
+---
+
 ## v0.3.0
 
 ### CRDs moved to a separate Helm chart (`karpenter-crd`)
