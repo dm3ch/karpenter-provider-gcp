@@ -48,7 +48,9 @@ const (
 	// Timeouts — ordered from shortest to longest.
 	NodePoolReadyTimeout   = 3 * time.Minute         // Karpenter NodePool Ready condition
 	NodeClassReadyTimeout  = 3 * time.Minute         // GCENodeClass Ready condition
-	NodeClaimLaunchTimeout = 3 * time.Minute         // NodeClaim reaches Launched=True
+	// NodeClaimLaunchTimeout is longer than a single GCE operation because karpenter may
+	// exhaust several STOCKOUT zone/type combinations before finding capacity.
+	NodeClaimLaunchTimeout = 10 * time.Minute        // NodeClaim reaches Launched=True
 	NodeCleanupTimeout     = 3 * time.Minute         // karpenter-provisioned VM terminated after NodePool deletion
 	ControllerStartTimeout = 5 * time.Minute         // karpenter controller Deployment becomes available
 	ProvisioningTimeout    = 10 * time.Minute        // VM created, booted, registered, pod Running
