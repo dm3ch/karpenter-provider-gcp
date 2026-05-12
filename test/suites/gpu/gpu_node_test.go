@@ -59,6 +59,7 @@ var _ = Describe("GPU Node", func() {
 		env.CreateNodePool(ctx, name, name, environment.TestCase{
 			CapacityType:        karpv1.CapacityTypeOnDemand,
 			Arch:                karpv1.ArchitectureAmd64,
+			Families:            []string{"g2"},
 			GPUCount:            "1",
 			ImageFamily:         gcpv1alpha1.ImageFamilyContainerOptimizedOS,
 			ConsolidationPolicy: "WhenEmpty",
