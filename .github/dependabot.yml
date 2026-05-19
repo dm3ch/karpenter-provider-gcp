@@ -44,5 +44,10 @@ updates:
       - dependency-type: "all"
     groups:
       dev-tools:
+        applies-to: version-updates
+        patterns:
+          - "*"
+      dev-tools-security:
+        applies-to: security-updates
         patterns:
           - "*"
