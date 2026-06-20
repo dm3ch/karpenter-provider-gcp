@@ -47903,7 +47903,7 @@
       }
     }
   },
-  "revision": "20260520",
+  "revision": "20260530",
   "rootUrl": "https://compute.googleapis.com/",
   "schemas": {
     "AWSV4Signature": {
@@ -67249,6 +67249,29 @@
             "MIG automatically repairs an unhealthy VM by recreating it."
           ],
           "type": "string"
+        },
+        "onRepair": {
+          "$ref": "InstanceGroupManagerInstanceLifecyclePolicyOnRepair",
+          "description": "Configuration for VM repairs in the MIG."
+        }
+      },
+      "type": "object"
+    },
+    "InstanceGroupManagerInstanceLifecyclePolicyOnRepair": {
+      "description": "Configuration for VM repairs in the MIG.",
+      "id": "InstanceGroupManagerInstanceLifecyclePolicyOnRepair",
+      "properties": {
+        "allowChangingZone": {
+          "description": "Specifies whether the MIG can change a VM's zone during a repair.\nValid values are:\n   \n   - NO (default): MIG cannot change a VM's zone during a\n   repair.\n   - YES: MIG can select a different zone for the VM during\n   a repair.",
+          "enum": [
+            "NO",
+            "YES"
+          ],
+          "enumDescriptions": [
+            "[Default] MIG cannot change a VM's zone during a repair.",
+            "MIG can select a different zone for the VM during a repair."
+          ],
+          "type": "string"
         }
       },
       "type": "object"
@@ -71669,6 +71692,11 @@
         },
         "description": {
           "description": "An optional description of this resource. Provide this property when you\ncreate the resource.",
+          "type": "string"
+        },
+        "effectiveLocation": {
+          "description": "Output only. URL of the InterconnectLocation object that represents where\nthis connection is to be provisioned. By default it will be the same as the\nlocation field.",
+          "readOnly": true,
           "type": "string"
         },
         "expectedOutages": {
@@ -79694,6 +79722,13 @@
         },
         "aliasIpRanges": {
           "description": "An array of alias IP ranges for this network interface.\nYou can only specify this field for network interfaces in VPC networks.",
+          "items": {
+            "$ref": "AliasIpRange"
+          },
+          "type": "array"
+        },
+        "aliasIpv6Ranges": {
+          "description": "An array of alias IPv6 ranges for this network interface.\nYou can only specify this field for network interfaces in VPC networks.",
           "items": {
             "$ref": "AliasIpRange"
           },
@@ -98924,7 +98959,7 @@
           "type": "string"
         },
         "storageBytesStatus": {
-          "description": "Output only. [Output Only] An indicator whether storageBytes is in a\nstable state or it is being adjusted as a result of shared storage\nreallocation. This status can either be UPDATING, meaning\nthe size of the snapshot is being updated, or UP_TO_DATE,\nmeaning the size of the snapshot is up-to-date.",
+          "description": "Output only. [Deprecated] Instead, check the storageBytes field. After\nsnapshot creation, the storageBytesStatus field is alwaysUP_TO_DATE.\n[Output Only] An indicator whether storageBytes is in a\nstable state or it is being adjusted as a result of shared storage\nreallocation. This status can either be unset, meaning the snapshot is\nbeing created, or UP_TO_DATE, meaning the size of the snapshot\nis up-to-date.",
           "enum": [
             "UPDATING",
             "UP_TO_DATE"
@@ -106286,6 +106321,22 @@
           "default": "compute#targetTcpProxy",
           "description": "Output only. [Output Only] Type of the resource. Alwayscompute#targetTcpProxy for target TCP proxies.",
           "readOnly": true,
+          "type": "string"
+        },
+        "loadBalancingScheme": {
+          "description": "Specifies the type of load balancing scheme used by this target proxy.",
+          "enum": [
+            "EXTERNAL",
+            "EXTERNAL_MANAGED",
+            "INTERNAL_MANAGED",
+            "LOAD_BALANCING_SCHEME_UNSPECIFIED"
+          ],
+          "enumDescriptions": [
+            "",
+            "",
+            "",
+            ""
+          ],
           "type": "string"
         },
         "name": {
