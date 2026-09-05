@@ -2677,8 +2677,6 @@ func (s CreateNodePoolRequest) MarshalJSON() ([]byte, error) {
 type CustomImageConfig struct {
 	// Image: The name of the image to use for this node.
 	Image string `json:"image,omitempty"`
-	// ImageFamily: The name of the image family to use for this node.
-	ImageFamily string `json:"imageFamily,omitempty"`
 	// ImageProject: The project containing the image to use for this node.
 	ImageProject string `json:"imageProject,omitempty"`
 	// ForceSendFields is a list of field names (e.g. "Image") to unconditionally
@@ -2696,6 +2694,29 @@ type CustomImageConfig struct {
 
 func (s CustomImageConfig) MarshalJSON() ([]byte, error) {
 	type NoMethod CustomImageConfig
+	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
+}
+
+// CustomImageInfo: Contains the custom image info for a node pool.
+type CustomImageInfo struct {
+	// UpgradeMessage: Output only. The human-readable upgrade message for the
+	// custom image.
+	UpgradeMessage string `json:"upgradeMessage,omitempty"`
+	// ForceSendFields is a list of field names (e.g. "UpgradeMessage") to
+	// unconditionally include in API requests. By default, fields with empty or
+	// default values are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-ForceSendFields for more
+	// details.
+	ForceSendFields []string `json:"-"`
+	// NullFields is a list of field names (e.g. "UpgradeMessage") to include in
+	// API requests with the JSON null value. By default, fields with empty values
+	// are omitted from API requests. See
+	// https://pkg.go.dev/google.golang.org/api#hdr-NullFields for more details.
+	NullFields []string `json:"-"`
+}
+
+func (s CustomImageInfo) MarshalJSON() ([]byte, error) {
+	type NoMethod CustomImageInfo
 	return gensupport.MarshalJSON(NoMethod(s), s.ForceSendFields, s.NullFields)
 }
 
@@ -4864,6 +4885,7 @@ type LoggingComponentConfig struct {
 	//   "KCP_SSHD" - kcp-sshd
 	//   "KCP_CONNECTION" - kcp connection logs
 	//   "KCP_HPA" - horizontal pod autoscaler decision logs
+	//   "KCP_VPA" - vertical pod autoscaler decision logs
 	EnableComponents []string `json:"enableComponents,omitempty"`
 	// ForceSendFields is a list of field names (e.g. "EnableComponents") to
 	// unconditionally include in API requests. By default, fields with empty or
@@ -6402,13 +6424,14 @@ type NodePool struct {
 	Autoscaling *NodePoolAutoscaling `json:"autoscaling,omitempty"`
 	// BestEffortProvisioning: Enable best effort provisioning for nodes
 	BestEffortProvisioning *BestEffortProvisioning `json:"bestEffortProvisioning,omitempty"`
-	// Conditions: Which conditions caused the current node pool state.
+	// Conditions: Output only. Which conditions caused the current node pool
+	// state.
 	Conditions []*StatusCondition `json:"conditions,omitempty"`
 	// Config: The node configuration of the pool.
 	Config *NodeConfig `json:"config,omitempty"`
-	// Etag: This checksum is computed by the server based on the value of node
-	// pool fields, and may be sent on update requests to ensure the client has an
-	// up-to-date value before proceeding.
+	// Etag: Output only. This checksum is computed by the server based on the
+	// value of node pool fields, and may be sent on update requests to ensure the
+	// client has an up-to-date value before proceeding.
 	Etag string `json:"etag,omitempty"`
 	// InitialNodeCount: The initial node count for the pool. You must ensure that
 	// your Compute Engine resource quota (https://cloud.google.com/compute/quotas)
@@ -6675,6 +6698,9 @@ type NodePoolUpgradeInfo struct {
 	// upgrade is paused.
 	//   "UPGRADE_PAUSED" - UPGRADE_PAUSED indicates the upgrade is paused.
 	AutoUpgradeStatus []string `json:"autoUpgradeStatus,omitempty"`
+	// CustomImageInfo: Output only. Upgrade info for the node pool specific to the
+	// usage of custom images.
+	CustomImageInfo *CustomImageInfo `json:"customImageInfo,omitempty"`
 	// EndOfExtendedSupportTimestamp: The node pool's current minor version's end
 	// of extended support timestamp.
 	EndOfExtendedSupportTimestamp string `json:"endOfExtendedSupportTimestamp,omitempty"`
@@ -7724,7 +7750,8 @@ type ReleaseChannel struct {
 	// to.
 	//
 	// Possible values:
-	//   "UNSPECIFIED" - No channel specified.
+	//   "UNSPECIFIED" - Deprecated: No channel specified. it will be removed in
+	// the future, use RAPID, REGULAR, STABLE or EXTENDED instead.
 	//   "RAPID" - RAPID channel is offered on an early access basis for customers
 	// who want to test new releases. WARNING: Versions available in the RAPID
 	// Channel may be subject to unresolved issues with no known workaround and are
@@ -7762,7 +7789,8 @@ type ReleaseChannelConfig struct {
 	// Channel: The release channel this configuration applies to.
 	//
 	// Possible values:
-	//   "UNSPECIFIED" - No channel specified.
+	//   "UNSPECIFIED" - Deprecated: No channel specified. it will be removed in
+	// the future, use RAPID, REGULAR, STABLE or EXTENDED instead.
 	//   "RAPID" - RAPID channel is offered on an early access basis for customers
 	// who want to test new releases. WARNING: Versions available in the RAPID
 	// Channel may be subject to unresolved issues with no known workaround and are
@@ -7815,6 +7843,8 @@ type ReservationAffinity struct {
 	//   "ANY_RESERVATION" - Consume any reservation available.
 	//   "SPECIFIC_RESERVATION" - Must consume from a specific reservation. Must
 	// specify key value fields for specifying the reservations.
+	//   "ANY_RESERVATION_THEN_FAIL" - Consume any reservation available. If no
+	// reservation is available, fail the node creation.
 	ConsumeReservationType string `json:"consumeReservationType,omitempty"`
 	// Key: Corresponds to the label key of a reservation resource. To target a
 	// SPECIFIC_RESERVATION by name, specify
@@ -9593,6 +9623,9 @@ type UpdateNodePoolRequest struct {
 	// pool. Initiates an upgrade operation that migrates the nodes in the node
 	// pool to the specified machine type.
 	MachineType string `json:"machineType,omitempty"`
+	// MaintenancePolicy: Optional. Specifies the maintenance policy for the node
+	// pool, including maintenance exclusion options.
+	MaintenancePolicy *NodePoolMaintenancePolicy `json:"maintenancePolicy,omitempty"`
 	// MaxRunDuration: The maximum duration for the nodes to exist. If unspecified,
 	// the nodes can exist indefinitely.
 	MaxRunDuration string `json:"maxRunDuration,omitempty"`
