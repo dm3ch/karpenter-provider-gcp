@@ -1,0 +1,30 @@
+name: Mirror upstream charts to fork Pages (E2E only)
+on:
+  push:
+    tags:
+      - 'v0.0.0-pages-mirror.*'
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+jobs:
+  mirror:
+    if: github.repository == 'dm3ch/karpenter-provider-gcp'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: chart-pages-publish
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Mirror validated upstream chart content
+        run: python3 .github/signing-e2e/mirror-upstream.py "$RUNNER_TEMP/pages-mirror"
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: ${{ runner.temp }}/pages-mirror
+      - uses: actions/deploy-pages@v5
+        id: deployment
