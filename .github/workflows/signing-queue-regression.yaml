@@ -1,0 +1,21 @@
+name: Signing queue regression (fork only)
+on:
+  push:
+    tags:
+      - 'v0.0.0-signing-queue-e2e.*'
+permissions:
+  contents: read
+jobs:
+  queued-release:
+    if: github.repository == 'dm3ch/karpenter-provider-gcp'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    concurrency:
+      group: signing-queue-regression
+      queue: max
+      cancel-in-progress: false
+    steps:
+      - name: Hold the critical section while two more releases queue
+        run: |
+          printf 'Queue test %s: %s\n' "$GITHUB_RUN_ID" "$GITHUB_REF"
+          sleep 45
