@@ -1,18 +1,21 @@
-name: Release image build
+name: Release signing E2E (fork only)
 
 on:
   push:
     tags:
-      - 'v[0-9]+.[0-9]+.[0-9]+'
-      - 'v[0-9]+.[0-9]+.[0-9]+-*'
+      - 'v0.0.0-signing-e2e.*'
 jobs:
   image-publish:
-    if: github.repository == 'cloudpilot-ai/karpenter-provider-gcp'
+    if: github.repository == 'dm3ch/karpenter-provider-gcp'
     runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      image: ${{ steps.image.outputs.reference }}
     permissions:
       contents: read
       id-token: write
       attestations: write
+      packages: write
     steps:
       - name: Set tag
         run: |
@@ -30,17 +33,12 @@ jobs:
           go-version-file: go.mod
           cache: false
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+      - name: Log in to fork GHCR test package
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
-          aws-access-key-id: ${{ secrets.AWS_AK }}
-          aws-secret-access-key: ${{ secrets.AWS_SK }}
-          aws-region: us-east-1
-
-      - name: Log in to Amazon ECR Public
-        uses: aws-actions/amazon-ecr-login@03f1aad4c6c7ffd436567f42f9384779290529bd # v2.1.7
-        with:
-          registry-type: public
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - uses: ko-build/setup-ko@61b4d1d396f5b2e7d6bb6fefdce3dc38d1a13445 # v0.10
 
@@ -53,10 +51,10 @@ jobs:
         env:
           IMAGE_TAG: ${{ env.tag }}
         run: |
-          export KO_DOCKER_REPO=public.ecr.aws/cloudpilotai/gcp/karpenter
+          export KO_DOCKER_REPO=ghcr.io/dm3ch/karpenter-provider-gcp-signing-e2e
           IMAGE=$(ko build --bare github.com/cloudpilot-ai/karpenter-provider-gcp/cmd/controller \
             --tags "$IMAGE_TAG" --sbom=spdx --sbom-dir "$RUNNER_TEMP/sboms")
-          [[ "$IMAGE" =~ ^public\.ecr\.aws/cloudpilotai/gcp/karpenter@sha256:[a-f0-9]{64}$ ]] || {
+          [[ "$IMAGE" =~ ^ghcr\.io/dm3ch/karpenter-provider-gcp-signing-e2e@sha256:[a-f0-9]{64}$ ]] || {
             echo 'Expected exactly one digest-qualified controller image from ko build' >&2
             exit 1
           }
@@ -83,7 +81,7 @@ jobs:
       - name: Attest image build provenance
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
-          subject-name: public.ecr.aws/cloudpilotai/gcp/karpenter
+          subject-name: ghcr.io/dm3ch/karpenter-provider-gcp-signing-e2e
           subject-digest: ${{ steps.image.outputs.digest }}
           push-to-registry: false
 
@@ -95,8 +93,9 @@ jobs:
           if-no-files-found: error
 
   package-chart:
-    if: github.repository == 'cloudpilot-ai/karpenter-provider-gcp'
+    if: github.repository == 'dm3ch/karpenter-provider-gcp'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     concurrency:
       group: chart-pages-publish
       cancel-in-progress: false
@@ -123,6 +122,11 @@ jobs:
         with:
           version: v4.3.0
 
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - run: python -m pip install PyYAML==6.0.3
+
       - name: Fetch existing Pages index
         run: |
           PAGES_URL="https://${{ github.repository_owner }}.github.io/${{ github.event.repository.name }}"
@@ -136,6 +140,17 @@ jobs:
             exit 1
           fi
 
+      - name: Snapshot all old chart bytes, signatures, keys and index records
+        run: |
+          python .github/signing-e2e/history.py snapshot \
+            --url "https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/" \
+            --index /tmp/merge-index.yaml --snapshot "$RUNNER_TEMP/history-before.json"
+
+      - name: Seed unexpected pre-existing source archives
+        run: |
+          printf 'untrusted source archive %s' "$GITHUB_RUN_ID" > "charts/karpenter-$tag_semver.tgz"
+          printf 'untrusted extra archive %s' "$GITHUB_RUN_ID" > "charts/unexpected-$tag_semver.tgz"
+
       - name: Build chart dependencies
         run: |
           # charts/ is not committed; helm package fails without the pinned subchart archives
@@ -145,14 +160,14 @@ jobs:
         id: gpg
         uses: crazy-max/ghaction-import-gpg@2dc316deee8e90f13e1a351ab510b4d5bc0c82cd # v7.0.0
         with:
-          gpg_private_key: ${{ secrets.HELM_SIGNING_KEY_BASE64 }}
-          passphrase: ${{ secrets.HELM_SIGNING_KEY_PASSPHRASE }}
+          gpg_private_key: ${{ secrets.SIGNING_E2E_HELM_KEY_BASE64 }}
+          passphrase: ${{ secrets.SIGNING_E2E_HELM_KEY_PASSPHRASE }}
 
       - name: Prepare Helm signing keyring
         id: signing
         env:
-          HELM_SIGNING_KEY_PASSPHRASE: ${{ secrets.HELM_SIGNING_KEY_PASSPHRASE }}
-          HELM_SIGNING_KEY_FINGERPRINT: ${{ vars.HELM_SIGNING_KEY_FINGERPRINT }}
+          HELM_SIGNING_KEY_PASSPHRASE: ${{ secrets.SIGNING_E2E_HELM_KEY_PASSPHRASE }}
+          HELM_SIGNING_KEY_FINGERPRINT: ${{ vars.SIGNING_E2E_HELM_KEY_FINGERPRINT }}
           IMPORTED_FINGERPRINT: ${{ steps.gpg.outputs.fingerprint }}
         run: |
           set +x
@@ -201,11 +216,18 @@ jobs:
           printf '%s %s\n' "karpenter-crd-$tag_semver.tgz" "$FINGERPRINT" >> "$CHARTS_DIR/signed-charts.txt"
 
       - name: Attest chart build provenance
+        id: chart-attestation
         uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: |
             ${{ steps.signing.outputs.charts }}/karpenter-${{ env.tag_semver }}.tgz
             ${{ steps.signing.outputs.charts }}/karpenter-crd-${{ env.tag_semver }}.tgz
+
+      - name: Verify attestation contains exactly the two new chart subjects
+        env:
+          BUNDLE: ${{ steps.chart-attestation.outputs.bundle-path }}
+          CHARTS_DIR: ${{ steps.signing.outputs.charts }}
+        run: python .github/signing-e2e/check-subjects.py
 
       - name: Update Helm repo index
         env:
@@ -284,6 +306,20 @@ jobs:
           sort -u "$PREVIOUS" "$CHARTS_DIR/signed-charts.txt" > "$RUNNER_TEMP/signed-charts.txt"
           mv "$RUNNER_TEMP/signed-charts.txt" "$CHARTS_DIR/signed-charts.txt"
 
+      - name: Refuse deployment if old chart history or signature bytes changed
+        env:
+          CHARTS_DIR: ${{ steps.signing.outputs.charts }}
+        run: |
+          python .github/signing-e2e/history.py check-local \
+            --directory "$CHARTS_DIR" --snapshot "$RUNNER_TEMP/history-before.json"
+          test ! -e "$CHARTS_DIR/unexpected-$tag_semver.tgz"
+
+      - name: Retain baseline preservation evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: chart-history-before
+          path: ${{ runner.temp }}/history-before.json
+
       - name: Setup Pages
         uses: actions/configure-pages@v6
 
@@ -301,3 +337,51 @@ jobs:
         env:
           KEYRING_DIR: ${{ steps.signing.outputs.keyring }}
         run: rm -rf "$KEYRING_DIR"
+
+  verify-published:
+    needs: [image-publish, package-chart]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+      packages: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      IMAGE: ${{ needs.image-publish.outputs.image }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.13'
+      - run: python -m pip install PyYAML==6.0.3
+      - uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
+        with:
+          cosign-release: v3.1.3
+      - uses: azure/setup-helm@1a275c3b69536ee54be43f2070a358922e12c8d4 # v4.3.1
+        with:
+          version: v4.3.0
+      - uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: chart-history-before
+          path: ${{ runner.temp }}/baseline
+      - name: Verify actual published artifacts and negative cases
+        run: python .github/signing-e2e/verify-published.py
+      - name: Verify old published chart bytes and signature files are unchanged
+        run: |
+          python .github/signing-e2e/history.py check-published \
+            --url "https://${GITHUB_REPOSITORY_OWNER}.github.io/${GITHUB_REPOSITORY#*/}/" \
+            --snapshot "$RUNNER_TEMP/baseline/history-before.json"
+      - name: Retain verification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: published-verification
+          path: ${{ runner.temp }}/verification
+          if-no-files-found: warn
