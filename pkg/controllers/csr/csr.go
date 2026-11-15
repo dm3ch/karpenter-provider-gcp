@@ -55,17 +55,18 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		return reconciler.Result{}, err
 	}
 
-	for _, csr := range csrList.Items {
-		if isApprovedOrDenied(&csr) {
+	for i := range csrList.Items {
+		candidate := &csrList.Items[i]
+		if isApprovedOrDenied(candidate) {
 			continue
 		}
 
-		log.FromContext(ctx).Info("reconciling CSR", "name", csr.Name)
-		if !KubeletClientSignerName.Has(csr.Spec.SignerName) {
+		log.FromContext(ctx).Info("reconciling CSR", "name", candidate.Name)
+		if !KubeletClientSignerName.Has(candidate.Spec.SignerName) {
 			continue
 		}
 
-		if !reflect.DeepEqual(csr.Spec.Usages, []certv1.KeyUsage{
+		if !reflect.DeepEqual(candidate.Spec.Usages, []certv1.KeyUsage{
 			certv1.UsageDigitalSignature,
 			certv1.UsageKeyEncipherment,
 			certv1.UsageClientAuth,
@@ -73,6 +74,7 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 			continue
 		}
 
+		csr := *candidate
 		log.FromContext(ctx).Info("approving bootstrap CSR", "name", csr.Name, "username", csr.Spec.Username)
 		csr.Status.Conditions = append(csr.Status.Conditions, certv1.CertificateSigningRequestCondition{
 			Type:           certv1.CertificateApproved,

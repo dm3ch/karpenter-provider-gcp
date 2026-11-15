@@ -99,9 +99,10 @@ func ResolveBootDiskSwap(nodeClass *v1alpha1.GCENodeClass, instanceType string, 
 // configures. ok is false when it configures none.
 func explicitBootDiskGiB(nodeClass *v1alpha1.GCENodeClass) (sizeGiB int64, ok bool, err error) {
 	var bootDisks []v1alpha1.Disk
-	for _, disk := range nodeClass.Spec.Disks {
+	for i := range nodeClass.Spec.Disks {
+		disk := &nodeClass.Spec.Disks[i]
 		if disk.Boot {
-			bootDisks = append(bootDisks, disk)
+			bootDisks = append(bootDisks, *disk)
 		}
 	}
 	if len(bootDisks) == 0 {
@@ -110,7 +111,8 @@ func explicitBootDiskGiB(nodeClass *v1alpha1.GCENodeClass) (sizeGiB int64, ok bo
 	if nodeClass.BootDiskSwapConfig() == nil {
 		// Without a swap file the boot disk size does not affect provider
 		// decisions, so keep accepting a disk whose size GCE resolves.
-		for _, disk := range bootDisks {
+		for i := range bootDisks {
+			disk := &bootDisks[i]
 			if disk.SizeGiB > 0 {
 				return int64(disk.SizeGiB), true, nil
 			}

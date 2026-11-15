@@ -57,7 +57,10 @@ var (
 	cosAMD64NVIDIANameRe = regexp.MustCompile(`^gke-\d+-gke\d+-cos-\d+-\d+-\d+-\d+-c-nvda$`)
 )
 
-var cosVersionRe = regexp.MustCompile(`^\d+\.\d+\.\d+\.\d+$`)
+var (
+	cosVersionRe      = regexp.MustCompile(`^\d+\.\d+\.\d+\.\d+$`)
+	cosImageVersionRe = regexp.MustCompile(`cos-\d+-([\d-]+)-c-pre`)
+)
 
 type ContainerOptimizedOS struct {
 	computeService  *compute.Service
@@ -93,9 +96,8 @@ func (c *ContainerOptimizedOS) ResolveImages(ctx context.Context, version string
 		log.FromContext(ctx).Error(err, "failed to resolve COS GKE image from image project")
 		return nil, err
 	}
-	versionRe := regexp.MustCompile(`cos-\d+-([\d-]+)-c-pre`)
 	targetVersion := renderVersion(version)
-	modifiedImage := versionRe.ReplaceAllString(sourceImage, "cos-"+targetVersion+"-c-pre")
+	modifiedImage := cosImageVersionRe.ReplaceAllString(sourceImage, "cos-"+targetVersion+"-c-pre")
 	return c.resolveImages(modifiedImage), nil
 }
 

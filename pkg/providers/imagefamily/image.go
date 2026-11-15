@@ -342,6 +342,11 @@ func isImageNotFound(err error) bool {
 	return errors.As(err, &apiErr) && apiErr.Code == http.StatusNotFound
 }
 
+var (
+	projectImageSourceRe = regexp.MustCompile(`^projects/([^/]+)/global/images/(.+)$`)
+	globalImageSourceRe  = regexp.MustCompile(`^global/images/(.+)$`)
+)
+
 // parseImageSource parses a GCP image source string
 // Supports formats like:
 // - projects/PROJECT_ID/global/images/IMAGE_NAME
@@ -352,14 +357,12 @@ func parseImageSource(imageSource string) (projectID, imageName string, err erro
 	imageSource = strings.TrimSpace(imageSource)
 
 	// Pattern: projects/PROJECT_ID/global/images/IMAGE_NAME
-	projectPattern := regexp.MustCompile(`^projects/([^/]+)/global/images/(.+)$`)
-	if matches := projectPattern.FindStringSubmatch(imageSource); matches != nil {
+	if matches := projectImageSourceRe.FindStringSubmatch(imageSource); matches != nil {
 		return matches[1], matches[2], nil
 	}
 
 	// Pattern: global/images/IMAGE_NAME
-	globalPattern := regexp.MustCompile(`^global/images/(.+)$`)
-	if matches := globalPattern.FindStringSubmatch(imageSource); matches != nil {
+	if matches := globalImageSourceRe.FindStringSubmatch(imageSource); matches != nil {
 		return "", "", fmt.Errorf("project ID required for global image reference: %s", imageSource)
 	}
 

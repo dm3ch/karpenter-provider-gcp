@@ -1,6 +1,6 @@
 {
   "ignorePatterns": "vendor/**",
-  "instructions": "Use package comments as the source of truth for package ownership boundaries. Flag changes that move GCE VM lifecycle, GKE cluster API reads, source node-pool selection, or provider policy into the wrong package. For pkg/metadata specifically, enforce that it remains a pure typed bootstrap metadata model and render boundary with no provider policy or API calls. For new user-visible behavior, consider whether an end-to-end test would cover meaningful GKE, GCP, or Kubernetes integration risk that unit tests cannot.",
+  "instructions": "Use package comments as the source of truth for package ownership boundaries. Flag changes that move GCE VM lifecycle, GKE cluster API reads, source node-pool selection, or provider policy into the wrong package. For pkg/metadata specifically, enforce that it remains a pure typed bootstrap metadata model and render boundary with no provider policy or API calls. For new user-visible behavior, consider whether an end-to-end test would cover meaningful GKE, GCP, or Kubernetes integration risk that unit tests cannot. Review changed hot paths and relevant dependency changes for concrete API amplification, lost cache reuse, and avoidable resource-scaled work; preserve freshness and ownership, and never present static findings as measured savings.",
   "rules": [
     {
       "id": "provider-boundaries",
@@ -37,6 +37,18 @@
       "rule": "When a change adds or materially changes user-visible behavior that depends on real GKE, GCP, or Kubernetes integration, assess whether an end-to-end test would cover risk that unit tests cannot. Only flag practical, high-value scenarios that fit the existing test/suites infrastructure, such as provisioning, node registration or configuration, lifecycle, drift, consolidation, repair, networking, storage, or GPU behavior. Do not request end-to-end coverage for refactors, generated or documentation-only changes, or behavior already well covered below cloud and process boundaries. Explain the uncovered integration risk and suggest a compact test outline with the existing or proposed suite, setup, action, key observable assertions, and cleanup; avoid implementation-level detail.",
       "scope": ["cmd/**", "pkg/**", "charts/**", "deploy/**", "hack/**"],
       "severity": "low"
+    },
+    {
+      "id": "operator-cache-api-efficiency",
+      "rule": "For changed repeated paths, flag concrete client, RESTMapper, or cache recreation; unstable or incomplete cache keys; lost cache reuse; duplicate concurrent fetches that should be shared; and new uncached reads, N+1 API requests, or repeated discovery/pagination when cached state satisfies the same contract. Include dependency changes only when their affected call paths show such a regression. Preserve freshness, invalidation, credential rotation, and isolation between inputs; do not recommend caching every response. Cite the changed file and line, amplification mechanism and workload, and suggest a minimal fix or validation step. Do not invent measured savings or demand a bespoke benchmark or live E2E for every suggestion.",
+      "scope": ["cmd/**", "pkg/cloudprovider/**", "pkg/controllers/**", "pkg/providers/**", "go.mod", "go.sum"],
+      "severity": "medium"
+    },
+    {
+      "id": "operator-hot-path-resource-work",
+      "rule": "For changed controller/provider hot paths, flag concrete avoidable repeated decoding, full-list scans, large value copies, or repeated compilation of an unchanged regular expression in a loop or repeatedly called helper (including regexp.Compile, regexp.MustCompile, and package-level regexp.Match calls). Reuse compiled fixed patterns, but do not hoist input-dependent patterns or introduce an unbounded pattern cache. Preserve copies needed for ownership, safe mutation, and caller-visible behavior; do not request pointer/API changes solely because a value is large. Report only avoidable regressions introduced by the change, with the changed file and line, amplification mechanism, relevant workload, and a minimal fix or validation step. Static analysis is not a CPU, memory, latency, or monetary measurement; do not claim numerical savings without evidence or request a new test framework for every finding.",
+      "scope": ["pkg/cloudprovider/**", "pkg/controllers/**", "pkg/providers/**", "pkg/metadata/**"],
+      "severity": "medium"
     }
   ]
 }

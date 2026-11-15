@@ -24,6 +24,15 @@ linters:
   disable:
     - prealloc
   settings:
+    gocritic:
+      # Keep default checks and add stable performance checks without API-signature churn.
+      enabled-checks:
+        - appendCombine
+        - indexAlloc
+        - rangeExprCopy
+        - rangeValCopy
+        - stringXbytes
+        - zeroByteRepeat
     gocyclo:
       min-complexity: 11
     govet:

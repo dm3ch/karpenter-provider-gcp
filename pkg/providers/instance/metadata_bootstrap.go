@@ -79,7 +79,9 @@ func patchKubeEnvOSDistribution(target *metadata.InstanceMetadata, nodeClass *v1
 
 func patchSecondaryBootDisksKubeEnv(target *metadata.InstanceMetadata, nodeClass *v1alpha1.GCENodeClass) {
 	secondaryBootDiskPaths := []string{}
-	for _, disk := range secondaryBootDisks(nodeClass) {
+	disks := secondaryBootDisks(nodeClass)
+	for i := range disks {
+		disk := &disks[i]
 		secondaryBootDiskPaths = append(secondaryBootDiskPaths, fmt.Sprintf("/mnt/disks/gke-secondary-disks/%s", secondaryBootDiskImageDeviceName(disk.SecondaryBootImage)))
 	}
 	if len(secondaryBootDiskPaths) > 0 {
