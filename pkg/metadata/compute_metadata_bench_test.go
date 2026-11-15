@@ -5,7 +5,7 @@ Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
 You may obtain a copy of the License at
 
-	http://www.apache.org/licenses/LICENSE-2.0
+    http://www.apache.org/licenses/LICENSE-2.0
 
 Unless required by applicable law or agreed to in writing, software
 distributed under the License is distributed on an "AS IS" BASIS,
@@ -24,26 +24,38 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
+var (
+	benchmarkParsedMetadata   *InstanceMetadata
+	benchmarkRenderedMetadata *compute.Metadata
+)
+
 func benchSourceMetadata() *compute.Metadata {
 	return &compute.Metadata{Items: []*compute.MetadataItems{
-		{Key: KubeLabelsKey, Value: lo.ToPtr("cloud.google.com/gke-nodepool=default,cloud.google.com/gke-os-distribution=cos")},
-		{Key: KubeEnvKey, Value: lo.ToPtr("CLUSTER_NAME: test\nDNS_SERVER_IP: 10.0.0.10\nENABLE_NODE_PROBLEM_DETECTOR: standalone\nCA_CERT: LS0tLS1CRUdJTiBDRVJUSUZJQ0FURS0tLS0t\n  continued-line\nKUBELET_ARGS: --v=2 --cloud-provider=external --max-pods=110 --node-labels=cloud.google.com/gke-nodepool=default,cloud.google.com/gke-os-distribution=cos --register-with-taints=dedicated=gpu:NoSchedule\nNODE_PROBLEM_DETECTOR_TOKEN: abc\n")},
+		{Key: KubeLabelsKey, Value: lo.ToPtr("source=true")},
+		{Key: KubeEnvKey, Value: lo.ToPtr("CLUSTER_NAME: benchmark\nDNS_SERVER_IP: 10.0.0.10\nCUSTOM_ENTRY: first line\n  continued-line\nKUBELET_ARGS: --v=2 --cloud-provider=external --max-pods=110 --node-labels=source=true --register-with-taints=dedicated=gpu:NoSchedule\n")},
 		{Key: KubeletConfigKey, Value: lo.ToPtr("apiVersion: kubelet.config.k8s.io/v1beta1\nkind: KubeletConfiguration\nnodeStatusUpdateFrequency: 10s\nmaxPods: 110\ncpuManagerPolicy: none\n")},
-		{Key: "cluster-name", Value: lo.ToPtr("test")},
-		{Key: "cluster-location", Value: lo.ToPtr("us-central1")},
-		{Key: "configure-sh", Value: lo.ToPtr("#!/bin/bash\necho configure\n")},
-		{Key: "unowned-source-key", Value: lo.ToPtr("source")},
+		{Key: "cluster-name", Value: lo.ToPtr("benchmark")},
+		{Key: "configure-sh", Value: lo.ToPtr("#!/bin/bash\necho synthetic-bootstrap\n")},
 	}}
 }
 
 func BenchmarkFromSourceTemplate(b *testing.B) {
-	src := benchSourceMetadata()
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := FromSourceTemplate(src); err != nil {
+	source := benchSourceMetadata()
+	model, err := FromSourceTemplate(source)
+	if err != nil {
+		b.Fatal(err)
+	}
+	if value, ok := model.GetKubeEnvEntry("CUSTOM_ENTRY"); !ok || value != "first line\n  continued-line" {
+		b.Fatal("source kube-env was not preserved")
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		model, err = FromSourceTemplate(source)
+		if err != nil {
 			b.Fatal(err)
 		}
 	}
+	benchmarkParsedMetadata = model
 }
 
 func BenchmarkToComputeMetadata(b *testing.B) {
@@ -51,21 +63,23 @@ func BenchmarkToComputeMetadata(b *testing.B) {
 	if err != nil {
 		b.Fatal(err)
 	}
-	model.SetKubeLabels(Labels{"karpenter.sh/nodepool": "default", "karpenter.k8s.gcp/gcenodeclass": "default"})
-	model.SetRegistrationNodeLabels(Labels{"karpenter.sh/nodepool": "default"})
+	model.SetKubeLabels(Labels{"karpenter.sh/nodepool": "benchmark"})
+	model.SetRegistrationNodeLabels(Labels{"karpenter.sh/nodepool": "benchmark"})
 	model.SetKubeletMaxPods(110)
 	model.AppendNodeTaint(corev1.Taint{Key: "karpenter.sh/unregistered", Effect: corev1.TaintEffectNoExecute})
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		if _, err := model.ToComputeMetadata(); err != nil {
+	result, err := model.ToComputeMetadata()
+	if err != nil {
+		b.Fatal(err)
+	}
+	if metadataValuesFromCompute(result)["cluster-name"] != "benchmark" {
+		b.Fatal("source cluster metadata was not rendered")
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		result, err = model.ToComputeMetadata()
+		if err != nil {
 			b.Fatal(err)
 		}
 	}
-}
-
-func BenchmarkParseSourceKubeletArgs(b *testing.B) {
-	raw := "--v=2 --cloud-provider=external --max-pods=110 --node-labels=a=b,c=d,e=f --register-with-taints=dedicated=gpu:NoSchedule --experimental-mounter-path=/home/kubernetes/containerized_mounter/mounter"
-	for i := 0; i < b.N; i++ {
-		_ = ParseSourceKubeletArgs(raw).String()
-	}
+	benchmarkRenderedMetadata = result
 }
