@@ -1,0 +1,81 @@
+name: CodSpeed
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request: {}
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codspeed-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmarks:
+    name: Provider performance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write # CodSpeed OIDC; no cloud credentials
+    env:
+      GOMAXPROCS: "2"
+      KUBECONFIG: /dev/null
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Check request budgets and record native allocation metrics
+        env:
+          RESULTS: ${{ runner.temp }}/provider-benchmarks.txt
+        run: |
+          set -o pipefail
+          go test -run='^TestGetServerConfig_' -bench='Benchmark(InstanceTypeProviderList|GetServerConfig|FromSourceTemplate|ToComputeMetadata)$' \
+            -benchmem -benchtime=200ms -count=3 \
+            ./pkg/providers/instancetype ./pkg/providers/gke ./pkg/metadata | tee "$RESULTS"
+
+      - name: Summarize native metrics
+        if: ${{ !cancelled() }}
+        env:
+          RESULTS: ${{ runner.temp }}/provider-benchmarks.txt
+        run: |
+          {
+            echo '## Native provider workload metrics'
+            echo 'B/op and allocs/op measure allocation traffic, not retained heap/RSS. api-requests/op counts local fake-backend requests, not billed API costs.'
+            echo 'These are measurements, not an allocation baseline gate. Request-budget violations fail the tests/benchmarks.'
+            echo 'Cold/refresh cases include cache reset; CodSpeed supplies separate timing comparisons once a main-branch baseline exists.'
+            echo '```text'
+            if [ -f "$RESULTS" ]; then
+              cat "$RESULTS"
+            else
+              echo 'No native results were produced; inspect the preceding step.'
+            fi
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Retain native metrics
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: provider-benchmarks-${{ github.sha }}
+          path: ${{ runner.temp }}/provider-benchmarks.txt
+          if-no-files-found: error
+
+      - name: Measure workloads with CodSpeed
+        # Personal forks use shared runners: small walltime changes can be noise.
+        uses: CodSpeedHQ/action@v5.6.3
+        with:
+          mode: walltime
+          runner-version: "5.6.3"
+          go-runner-version: "1.4.0"
+          cache-instruments: false
+          run: go test -bench='Benchmark(InstanceTypeProviderList|GetServerConfig|FromSourceTemplate|ToComputeMetadata)$' -benchtime=1s ./pkg/providers/instancetype ./pkg/providers/gke ./pkg/metadata

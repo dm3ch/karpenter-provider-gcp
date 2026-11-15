@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/patrickmn/go-cache"
 	"github.com/stretchr/testify/require"
@@ -90,6 +91,40 @@ func TestGetServerConfig_CacheHit(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, sc1, sc2)
 	require.Equal(t, int32(1), calls.Load(), "second call must hit cache")
+}
+
+func TestGetServerConfig_RefreshExpiredEntry(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(&containerv1.ServerConfig{
+			Channels: []*containerv1.ReleaseChannelConfig{{Channel: "STABLE", DefaultVersion: "1.35.2"}},
+		})
+	}))
+	defer srv.Close()
+	svc, err := containerv1.NewService(context.Background(),
+		googleapioption.WithoutAuthentication(),
+		googleapioption.WithEndpoint(srv.URL+"/"),
+	)
+	require.NoError(t, err)
+	p := &DefaultProvider{
+		containerService: svc, projectID: "p", nodeLocation: "us-central1",
+		serverConfigCache: cache.NewFrom(serverConfigCacheTTL, 0, map[string]cache.Item{
+			serverConfigCacheKey: {
+				Object: &containerv1.ServerConfig{
+					Channels: []*containerv1.ReleaseChannelConfig{{Channel: "STABLE", DefaultVersion: "1.34.1"}},
+				},
+				Expiration: time.Now().Add(-time.Hour).UnixNano(),
+			},
+		}),
+	}
+
+	config, err := p.GetServerConfig(context.Background())
+	require.NoError(t, err)
+	require.Len(t, config.Channels, 1)
+	require.Equal(t, "1.35.2", config.Channels[0].DefaultVersion)
+	require.Equal(t, int32(1), calls.Load(), "expired configuration must be refreshed")
 }
 
 func TestResolveClusterZones_UsesClusterLocations(t *testing.T) {
