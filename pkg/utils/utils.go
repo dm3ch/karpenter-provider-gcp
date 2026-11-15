@@ -54,9 +54,10 @@ func GetAllSingleValuedRequirementLabels(instanceType *cloudprovider.InstanceTyp
 	return labels
 }
 
+var invalidGCELabelCharacters = regexp.MustCompile("[^a-zA-Z0-9]+")
+
 func SanitizeGCELabelValue(s string) string {
-	re := regexp.MustCompile("[^a-zA-Z0-9]+")
-	sanitized := re.ReplaceAllString(s, "-")
+	sanitized := invalidGCELabelCharacters.ReplaceAllString(s, "-")
 
 	sanitized = strings.Trim(sanitized, "-")
 	return strings.ToLower(sanitized)

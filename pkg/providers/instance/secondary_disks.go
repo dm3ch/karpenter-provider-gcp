@@ -34,11 +34,12 @@ func secondaryBootDiskImageName(image string) string {
 
 func secondaryBootDisks(nodeClass *v1alpha1.GCENodeClass) []v1alpha1.Disk {
 	disks := make([]v1alpha1.Disk, 0, len(nodeClass.Spec.Disks))
-	for _, disk := range nodeClass.Spec.Disks {
+	for i := range nodeClass.Spec.Disks {
+		disk := &nodeClass.Spec.Disks[i]
 		if disk.Boot || disk.SecondaryBootImage == "" || disk.SecondaryBootMode == "MODE_UNSPECIFIED" {
 			continue
 		}
-		disks = append(disks, disk)
+		disks = append(disks, *disk)
 	}
 	return disks
 }

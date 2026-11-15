@@ -432,7 +432,8 @@ func (e *Environment) recordControllerResourceSample(ctx context.Context) {
 	}
 
 	var cpuMillis, memoryBytes int64
-	for _, pod := range metrics.Items {
+	for i := range metrics.Items {
+		pod := &metrics.Items[i]
 		for _, container := range pod.Containers {
 			cpuMillis += container.Usage.Cpu().MilliValue()
 			memoryBytes += container.Usage.Memory().Value()
@@ -465,7 +466,8 @@ func (e *Environment) controllerResourceRequests(ctx context.Context) resourceRe
 	}
 
 	var requests resourceRequests
-	for _, container := range dep.Spec.Template.Spec.Containers {
+	for i := range dep.Spec.Template.Spec.Containers {
+		container := &dep.Spec.Template.Spec.Containers[i]
 		requests.CPU += container.Resources.Requests.Cpu().MilliValue()
 		requests.Memory += container.Resources.Requests.Memory().Value()
 	}

@@ -119,7 +119,8 @@ func requireNodeOverlayEnabled(ctx context.Context) {
 	dep, err := env.KubeClient.AppsV1().Deployments(environment.KarpenterNamespace).
 		Get(ctx, environment.KarpenterDeployment, metav1.GetOptions{})
 	Expect(err).NotTo(HaveOccurred(), "failed to get karpenter deployment")
-	for _, c := range dep.Spec.Template.Spec.Containers {
+	for i := range dep.Spec.Template.Spec.Containers {
+		c := &dep.Spec.Template.Spec.Containers[i]
 		for _, e := range c.Env {
 			if e.Name == "FEATURE_GATES" {
 				Expect(strings.Contains(e.Value, "NodeOverlay=true")).To(BeTrue(),

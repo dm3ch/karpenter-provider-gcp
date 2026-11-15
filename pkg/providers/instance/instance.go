@@ -955,7 +955,8 @@ func (p *DefaultProvider) renderDiskProperties(instanceType *cloudprovider.Insta
 	})
 
 	attachedDisks := make([]*compute.AttachedDisk, 0, len(disks)+ssdCount)
-	for _, disk := range disks {
+	for i := range disks {
+		disk := &disks[i]
 		if disk.Category == "local-ssd" {
 			continue
 		}
@@ -989,7 +990,7 @@ func (p *DefaultProvider) renderDiskProperties(instanceType *cloudprovider.Insta
 			attachedDisk.InitializeParams.Architecture = imagefamily.OSArchitectureARM
 		}
 
-		if err := setDiskSource(attachedDisk, disk, nodeClass, instanceType); err != nil {
+		if err := setDiskSource(attachedDisk, *disk, nodeClass, instanceType); err != nil {
 			return nil, err
 		}
 
@@ -1316,7 +1317,9 @@ func (p *DefaultProvider) buildTargetMetadata(ctx context.Context, target *metad
 		target.SetKubeLabel("cloud.google.com/machine-family", family)
 		target.SetRegistrationNodeLabel("cloud.google.com/machine-family", family)
 	}
-	for _, disk := range secondaryBootDisks(nodeClass) {
+	disks := secondaryBootDisks(nodeClass)
+	for i := range disks {
+		disk := &disks[i]
 		name := secondaryBootDiskImageName(disk.SecondaryBootImage)
 		target.SetKubeLabel(GKESecondaryBootDiskLabelPrefix+name, fmt.Sprintf("%s.%s", disk.SecondaryBootMode, p.projectID))
 	}

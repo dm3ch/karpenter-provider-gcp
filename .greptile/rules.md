@@ -25,6 +25,18 @@ Compare types, allowed values, units, defaults, and omitted versus explicit fals
 
 Only flag concrete, avoidable mismatches introduced or materially changed by the PR. Cite the equivalent GKE/Terraform field and reference, suggest the aligned API shape, and account for any documented reason for divergence. Verify that generated CRDs, reference docs, and examples match the chosen API; do not report an already-correct nested field or a justified exception as a violation.
 
+## Operator performance and API efficiency
+
+For changed provider, controller, cloudprovider, and bootstrap paths, look for concrete increases in work per reconciliation or resource. Include dependency changes when the diff or affected call path shows a change in client discovery, informer behavior, or cache cost.
+
+- Flag clients, RESTMappers, or caches recreated on repeated paths; unstable or incomplete cache keys; lost cache reuse; and duplicate concurrent fetches where requests should be shared.
+- Check that cache optimizations preserve freshness, invalidation, credential rotation, and isolation between different inputs. Do not recommend caching every API response or sharing results across incompatible keys.
+- Flag new uncached reads, N+1 API requests, repeated pagination/discovery, or refetch loops when existing cached state can satisfy the same contract.
+- Flag repeated compilation of an unchanged regular expression inside a loop or repeatedly called helper, including `regexp.Compile`, `regexp.MustCompile`, and package-level `regexp.Match*` calls. Reuse a compiled expression for fixed patterns; do not hoist input-dependent patterns or introduce an unbounded pattern cache.
+- Look for repeated decoding, full-list scans, and large value copies on paths whose cost scales with resource count. Preserve copies needed for ownership, mutation safety, or caller-visible behavior; do not request pointer/API changes solely because a value is large.
+
+For each finding, cite the changed file and line, explain the amplification mechanism and relevant workload, and suggest a minimal fix or validation step. Report only concrete, avoidable regressions introduced by the change. Do not invent CPU, memory, latency, or monetary savings, treat static analysis as a measured performance result, or demand a new benchmark, test framework, or live E2E for every suggestion.
+
 ## End-to-end coverage opportunities
 
 For new or materially changed user-visible behavior, consider whether an end-to-end test would cover integration risk that unit tests cannot. Recommend one only when the behavior crosses real GKE, GCP, Kubernetes, controller, or node boundaries; has stable observable outcomes; and can be exercised economically in the existing `test/suites` environment.

@@ -1109,8 +1109,8 @@ func (e *Environment) AllNodeNames(ctx context.Context) map[string]struct{} {
 	nodes, err := e.KubeClient.CoreV1().Nodes().List(ctx, metav1.ListOptions{})
 	Expect(err).NotTo(HaveOccurred())
 	result := make(map[string]struct{}, len(nodes.Items))
-	for _, n := range nodes.Items {
-		result[n.Name] = struct{}{}
+	for i := range nodes.Items {
+		result[nodes.Items[i].Name] = struct{}{}
 	}
 	return result
 }
@@ -1410,10 +1410,11 @@ func (e *Environment) daemonSetPodsOnNode(ctx context.Context, g Gomega, nodeNam
 	g.Expect(err).NotTo(HaveOccurred(), "listing %s pods on node %s", labelSelector, nodeName)
 
 	var agents []corev1.Pod
-	for _, pod := range pods.Items {
+	for i := range pods.Items {
+		pod := &pods.Items[i]
 		for _, owner := range pod.OwnerReferences {
 			if owner.Kind == "DaemonSet" {
-				agents = append(agents, pod)
+				agents = append(agents, *pod)
 				break
 			}
 		}
@@ -1436,12 +1437,14 @@ func kubeProxyImageMatchesArch(pod *corev1.Pod, arch string) bool {
 
 func kubeProxyImages(pod *corev1.Pod) []string {
 	images := make([]string, 0, len(pod.Spec.Containers)+len(pod.Status.ContainerStatuses)*2)
-	for _, container := range pod.Spec.Containers {
+	for i := range pod.Spec.Containers {
+		container := &pod.Spec.Containers[i]
 		if strings.Contains(container.Image, "kube-proxy") {
 			images = append(images, container.Image)
 		}
 	}
-	for _, status := range pod.Status.ContainerStatuses {
+	for i := range pod.Status.ContainerStatuses {
+		status := &pod.Status.ContainerStatuses[i]
 		if strings.Contains(status.Image, "kube-proxy") {
 			images = append(images, status.Image)
 		}
@@ -1454,8 +1457,8 @@ func kubeProxyImages(pod *corev1.Pod) []string {
 
 func podNames(pods []corev1.Pod) []string {
 	names := make([]string, 0, len(pods))
-	for _, pod := range pods {
-		names = append(names, pod.Name)
+	for i := range pods {
+		names = append(names, pods[i].Name)
 	}
 	return names
 }

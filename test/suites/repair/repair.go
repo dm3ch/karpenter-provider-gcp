@@ -65,7 +65,8 @@ func requireNodeRepairEnabled() {
 	dep, err := env.KubeClient.AppsV1().Deployments(environment.KarpenterNamespace).
 		Get(context.Background(), environment.KarpenterDeployment, metav1.GetOptions{})
 	Expect(err).NotTo(HaveOccurred(), "failed to get karpenter deployment")
-	for _, c := range dep.Spec.Template.Spec.Containers {
+	for i := range dep.Spec.Template.Spec.Containers {
+		c := &dep.Spec.Template.Spec.Containers[i]
 		for _, e := range c.Env {
 			Expect(e.Name == "LEGACY_NODE_REPAIR" && e.Value == "true").To(BeFalse(),
 				"this spec requires modern repair; redeploy with controller.settings.legacyNodeRepair=false")
