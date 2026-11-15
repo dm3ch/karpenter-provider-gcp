@@ -1,0 +1,32 @@
+name: CodSpeed
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request: {}
+  # `workflow_dispatch` allows CodSpeed to trigger backtest
+  # performance analysis in order to generate initial data.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write # for OpenID Connect authentication with CodSpeed
+
+jobs:
+  benchmarks:
+    name: Run benchmarks
+    # codspeed-macro runners are only available for organization repositories
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Run Go benchmarks
+        uses: CodSpeedHQ/action@v5
+        with:
+          mode: walltime
+          run: go test -run='^$' -bench=. -benchtime=2s ./pkg/...
