@@ -49,8 +49,12 @@ type Instance struct {
 	KubeLabels map[string]string `json:"kubeLabels,omitempty"`
 	Location   string            `json:"location"`
 	Name       string            `json:"name"`
-	ProjectID  string            `json:"projectId"`
-	Status     string            `json:"status"`
-	Tags       map[string]string `json:"tags"`
-	Type       string            `json:"type"`
+	// NumericID is the numeric Compute Engine instance ID of the VM. It changes
+	// when a VM with the same name is replaced. Zero means the incarnation is not
+	// known, e.g. for a VM adopted without a NodeClaim ownership label.
+	NumericID uint64            `json:"numericId"`
+	ProjectID string            `json:"projectId"`
+	Status    string            `json:"status"`
+	Tags      map[string]string `json:"tags"`
+	Type      string            `json:"type"`
 }

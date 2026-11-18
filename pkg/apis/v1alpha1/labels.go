@@ -180,6 +180,10 @@ var (
 	// NodeCreatedByController is the AnnotationNodeCreatedBy value for the node
 	// creation controller.
 	NodeCreatedByController = "nodecreation-controller"
+	// AnnotationInstanceNumericID records the numeric Compute Engine instance ID of the
+	// VM launched for a NodeClaim. Attested kubelet CSR approval requires it to match
+	// the live VM so a same-named replacement cannot inherit the claim's identity.
+	AnnotationInstanceNumericID = apis.Group + "/instance-numeric-id"
 
 	TagNodeClaim = coreapis.Group + "/nodeclaim"
 	TagName      = "Name"
