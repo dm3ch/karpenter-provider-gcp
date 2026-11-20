@@ -71,7 +71,7 @@ func TestReconcileDoesNotReapproveDecidedRequests(t *testing.T) {
 			tt.decided(request)
 			api, double := newKubeAPIDouble(t)
 			double.sarAllowed = true
-			controller := NewController(api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+			controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
 				return fixtureIdentity(t, fixture), nil
 			}))
 			controller.client = &csrReadClient{request: request, claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
@@ -88,7 +88,7 @@ func TestReconcileFailsClosedWhenClaimsCannotBeRead(t *testing.T) {
 	fixture := newAttestationFixture(t)
 	api, double := newKubeAPIDouble(t)
 	readErr := errors.New("nodeclaim read unavailable")
-	controller := NewController(api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
 		return fixtureIdentity(t, fixture), nil
 	}))
 	controller.client = &csrReadClient{request: bootstrapCSR(encodePEMBlocks(fixture.blocks(t))), claimError: readErr}
@@ -109,7 +109,7 @@ func TestReconcileContinuesAfterTemporaryIdentityFailure(t *testing.T) {
 
 	api, double := newKubeAPIDouble(t)
 	double.sarAllowed = true
-	controller := NewController(api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
 		return nil, errors.New("compute unavailable")
 	}))
 	controller.client = &csrReadClient{requests: []*certv1.CertificateSigningRequest{failing, selfRenewal}, claims: []karpv1.NodeClaim{claimForFixture(t, "pending"), other}}
@@ -127,7 +127,7 @@ func TestReconcileReportsApprovalConflict(t *testing.T) {
 	api, double := newKubeAPIDouble(t)
 	double.sarAllowed = true
 	double.approvalConflict = true
-	controller := NewController(api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
 		return fixtureIdentity(t, fixture), nil
 	}))
 	controller.client = &csrReadClient{request: bootstrapCSR(encodePEMBlocks(fixture.blocks(t))), claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
@@ -308,7 +308,7 @@ func TestReconcileRecordsEnrollmentOnlyForApprovedBootstrap(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			api, double := newKubeAPIDouble(t)
 			double.sarAllowed = true
-			controller := NewController(api, identity)
+			controller := newTestController(t, api, identity)
 			controller.now = func() time.Time { return enrolledAt }
 			reads := &csrReadClient{request: tt.csr(t), claims: tt.claims}
 			controller.client = reads
@@ -333,7 +333,7 @@ func TestReconcileRecordsNoEnrollmentWhenApprovalFails(t *testing.T) {
 	api, double := newKubeAPIDouble(t)
 	double.sarAllowed = true
 	double.approvalConflict = true
-	controller := NewController(api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
 		return fixtureIdentity(t, fixture), nil
 	}))
 	reads := &csrReadClient{
@@ -371,7 +371,7 @@ func TestReconcileRetriesMissedEnrollmentOnlyForOwnApprovals(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			api, double := newKubeAPIDouble(t)
 			double.sarAllowed = true
-			controller := NewController(api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+			controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
 				t.Error("a decided request must not be attested again")
 				return nil, errors.New("unexpected identity lookup")
 			}))
