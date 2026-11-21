@@ -117,6 +117,16 @@ Rejected: hides blocked or misconfigured projects and makes the selected catalog
 
 Rejected for now: the embedded release is not reliably decodable for Ubuntu and would change image pin and channel semantics.
 
+### Derive the default release from GKE data at runtime
+
+Tested on 2026-11-21 whether GKE exposes the default Ubuntu release, so that no table is needed:
+
+- **GKE API:** `getServerConfig` returns only `defaultImageType` and `validImageTypes`; no Ubuntu release appears anywhere in it. A node pool's `config.nodeImageConfig` names the exact image GKE assigned (`gke-1364-gke2046003-cos-...-c-pre` on the E2E cluster's COS pool), which would identify the release, but only for a cluster that already has an Ubuntu pool.
+- **GCS:** `gstatic.com/gke-image-maps/gke-to-cos.json` maps GKE versions to COS images only; the guessed Ubuntu equivalents return 404. The `ubuntu-os-gke-cloud` bucket holds per-image manifests, changelogs and file lists, with no GKE-version mapping.
+- **Image catalog:** `gke-ubuntu-node-images` holds per-patch images `gke-<version>-gke<build>-ubuntu-<release>-<minor>-<arch>-vDATE-c-pre` that embed both the GKE version and the Ubuntu release, but only for 1.36 and later (none in `ubuntu-os-gke-cloud`, so nothing for 1.28 to 1.35). For 1.36 all 245 versions use 24.04. For 1.37, 174 versions use only 24.04 and 4 have both 24.04 and 26.04. For 1.38 (alpha), 54 versions have only 24.04, 29 have both and 2 have only 26.04. That is ambiguous exactly where the answer matters, the names are undocumented, and finding a version means scanning a catalog of about 9,000 images (see #644 on catalog quota).
+
+Decision: keep the sourced table as the runtime authority. The catalog data is useful as a maintainer cross-check when raising `MaxK8sVersion`, and it corroborates that GKE still defaults to 24.04 through 1.37 and has not moved the default to 26.04 in the 1.38 alpha builds (not documented by GKE, so not encoded). Cross-check with `gcloud compute images list --project=gke-ubuntu-node-images --filter="name~'^gke-1370-.*-ubuntu-'"`, adjusting the version prefix.
+
 ## Future Direction
 
 - Omission of `osVersion` meaning `default`, if users find the explicit form noisy.
