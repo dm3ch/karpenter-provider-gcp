@@ -733,30 +733,50 @@ func TestListUbuntuOSVersionSelectsRelease(t *testing.T) {
 
 // TestUbuntuDefaultRelease protects osVersion "default": it follows the release GKE documents as its
 // Ubuntu default (22.04 before 1.32.1, 24.04 from 1.32.1-gke.1002000), including the patch-level
-// boundary, and fails closed for versions that are unsupported or whose default is not verified.
+// boundary, and outside the verified range it falls back (24.04 above, the oldest row below) while
+// reporting the result as unverified.
 func TestUbuntuDefaultRelease(t *testing.T) {
-	tests := map[string]string{
-		"v1.28.1-gke.100":      "2204",
-		"1.31.14-gke.2116000":  "2204",
-		"v1.32.0-gke.1000000":  "2204",
-		"v1.32.1-gke.1002000":  "2404",
-		"v1.32.13-gke.3004000": "2404",
-		"v1.35.9-gke.1673000":  "2404",
-		"v1.36.5-gke.2262000":  "2404",
+	tests := []struct {
+		version, release string
+		verified         bool
+	}{
+		{"v1.28.1-gke.100", "2204", true},
+		{"1.31.14-gke.2116000", "2204", true},
+		{"v1.32.0-gke.1000000", "2204", true},
+		{"v1.32.1-gke.1002000", "2404", true},
+		{"v1.32.13-gke.3004000", "2404", true},
+		{"v1.35.9-gke.1673000", "2404", true},
+		{"v1.36.5-gke.2262000", "2404", true},
+		// above the verified range: the fallback (GKE's current documented default)
+		{"v1.37.2-gke.1042000", "2404", false},
+		{"v1.38.0-gke.4814000+preview", "2404", false},
+		{"v2.0.0", "2404", false},
+		// below the supported range: the oldest row, which is what GKE documents for old versions
+		{"v1.27.9-gke.1", "2204", false},
 	}
-	for version, want := range tests {
-		got, err := ubuntuDefaultRelease(version)
-		require.NoError(t, err, version)
-		require.Equal(t, want, got, version)
+	for _, tt := range tests {
+		release, verified, err := ubuntuDefaultRelease(tt.version)
+		require.NoError(t, err, tt.version)
+		require.Equal(t, tt.release, release, tt.version)
+		require.Equal(t, tt.verified, verified, tt.version)
 	}
-	for _, version := range []string{"v1.27.9-gke.1", "v1.37.2-gke.1042000", "v1.38.0-gke.4814000+preview"} {
-		_, err := ubuntuDefaultRelease(version)
-		require.Error(t, err, version)
-		require.True(t, IsImageResolutionError(err), version)
-		require.ErrorContains(t, err, "set osVersion explicitly", version)
-	}
-	_, err := ubuntuDefaultRelease("not-a-version")
+	_, _, err := ubuntuDefaultRelease("not-a-version")
 	require.Error(t, err)
+}
+
+// TestUbuntuDefaultsHaveOneFallback protects the table invariant the out-of-range behavior relies
+// on: exactly one row is the fallback, and it is the newest row, GKE's current documented default.
+func TestUbuntuDefaultsHaveOneFallback(t *testing.T) {
+	fallbacks := 0
+	for i, d := range ubuntuDefaults {
+		if d.fallback {
+			fallbacks++
+			require.Equal(t, len(ubuntuDefaults)-1, i, "the fallback must be the newest row")
+		}
+		_, ok := ubuntuReleases[d.release]
+		require.True(t, ok, "row %d names an unknown release %q", i, d.release)
+	}
+	require.Equal(t, 1, fallbacks)
 }
 
 // TestUbuntuDefaultVerifiedThroughMaxK8sVersion makes raising the provider's maximum tested
@@ -767,21 +787,27 @@ func TestUbuntuDefaultVerifiedThroughMaxK8sVersion(t *testing.T) {
 	require.Equal(t, maxMinor, ubuntuDefaultVerifiedMinor,
 		"MaxK8sVersion moved: verify GKE's default Ubuntu release for the new minor, update ubuntuDefaults and ubuntuDefaultVerifiedMinor")
 	for minor := int(k8sversion.MustParseGeneric(versionprovider.MinK8sVersion).Minor()); minor <= maxMinor; minor++ {
-		_, err := ubuntuDefaultRelease(fmt.Sprintf("1.%d.1", minor))
+		_, verified, err := ubuntuDefaultRelease(fmt.Sprintf("1.%d.1", minor))
 		require.NoError(t, err, "1.%d must have a default Ubuntu release", minor)
+		require.True(t, verified, "1.%d is inside the supported range and must be verified", minor)
 	}
 }
 
 // TestListUbuntuOSVersionDefault protects resolving osVersion "default" through the provider:
-// the release and image project both follow the cluster version, and a cluster version whose
-// default is unverified is a configuration error instead of a guess.
+// the release and image project both follow the cluster version, and an unverified cluster
+// version uses the fallback release instead of guessing another or failing.
 func TestListUbuntuOSVersionDefault(t *testing.T) {
 	// The catalog server ignores the project; names are distinct per release and minor, and the
 	// project in each resolved source image comes from the resolver.
 	srv := imageCatalogServer(t, &imageCatalog{pages: [][]*compute.Image{{
 		{Name: "ubuntu-gke-2404-1-36-arm64-v20261117", Status: "READY"},
 		{Name: "ubuntu-gke-2404-1-36-amd64-v20261117", Status: "READY"},
+		{Name: "ubuntu-gke-2604-1-38-arm64-v20261119", Status: "READY"},
+		{Name: "ubuntu-gke-2604-1-38-amd64-v20261119", Status: "READY"},
+		{Name: "ubuntu-gke-2604-1-37-arm64-v20260925", Status: "READY"},
 		{Name: "ubuntu-gke-2604-1-37-amd64-v20260925", Status: "READY"},
+		{Name: "ubuntu-gke-2404-1-37-arm64-v20261112", Status: "READY"},
+		{Name: "ubuntu-gke-2404-1-37-amd64-v20261112", Status: "READY"},
 		{Name: "ubuntu-gke-2204-1-31-arm64-v20260810", Status: "READY"},
 		{Name: "ubuntu-gke-2204-1-31-v20260810", Status: "READY"},
 		{Name: "ubuntu-gke-2404-1-31-arm64-v20240916", Status: "READY"},
@@ -810,8 +836,19 @@ func TestListUbuntuOSVersionDefault(t *testing.T) {
 		"projects/gke-ubuntu-node-images/global/images/ubuntu-gke-2404-1-36-arm64-v20261117",
 	}, imageSources(got))
 
-	// 26.04 images exist for 1.37, but GKE has not documented them as the default.
-	_, err = list("v1.37.2-gke.1042000")
+	// Above the verified range the fallback is GKE's current documented default, 24.04, even though
+	// newer 26.04 images exist for 1.37.
+	got, err = list("v1.37.2-gke.1042000")
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"projects/gke-ubuntu-node-images/global/images/ubuntu-gke-2404-1-37-amd64-v20261112",
+		"projects/gke-ubuntu-node-images/global/images/ubuntu-gke-2404-1-37-arm64-v20261112",
+	}, imageSources(got))
+
+	// 1.38 publishes only 26.04; the fallback still names 24.04 and fails clearly instead of
+	// switching to a release GKE has not documented as the default.
+	_, err = list("v1.38.0-gke.4814000")
 	require.True(t, IsImageResolutionError(err))
-	require.ErrorContains(t, err, "has not been verified")
+	require.ErrorContains(t, err, "ubuntu-gke-2404")
+	require.ErrorContains(t, err, "osVersion default selected Ubuntu 24.04")
 }

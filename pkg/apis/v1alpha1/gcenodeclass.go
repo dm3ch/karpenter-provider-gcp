@@ -306,9 +306,10 @@ type ImageSelectorTerm struct {
 	// "default" for the release GKE uses by default for the cluster's Kubernetes version. It is
 	// required for Ubuntu and not allowed for other families. A fixed release never changes on its
 	// own; "default" follows GKE and can change when the cluster is upgraded across a version GKE
-	// moved its default at, which drifts nodes to the new image. GKE publishes each release only
-	// for some Kubernetes minors; an unavailable release, or a cluster version whose default has
-	// not been verified, fails image resolution instead of falling back to another release.
+	// moved its default at, which drifts nodes to the new image. For cluster versions this Karpenter
+	// release has not verified, "default" uses GKE's current documented default (24.04) and logs a
+	// warning. GKE publishes each release only for some Kubernetes minors; an unavailable release
+	// fails image resolution instead of falling back to another release.
 	// Version still pins the image build within the release.
 	// +kubebuilder:validation:Pattern=`^(default|[0-9]{2}\.[0-9]{2})$`
 	// +kubebuilder:validation:MaxLength=7
