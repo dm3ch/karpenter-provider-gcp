@@ -118,14 +118,20 @@ Successful results are cached for five minutes, so newly published variants and 
 
 ## OS families
 
-| Family                 | OS                     | Notes                                                                     |
-|------------------------|------------------------|---------------------------------------------------------------------------|
-| `ContainerOptimizedOS` | Container-Optimized OS | Supports `channel` and `version`                                          |
-| `Ubuntu`               | Ubuntu                 | Requires `osVersion` (`22.04`, `24.04`, `26.04`); supports `version` only |
-| `Ubuntu2404`           | Ubuntu 24.04 LTS       | **Deprecated.** Same as `Ubuntu` with `osVersion: "24.04"`                |
-| `Ubuntu2204`           | Ubuntu 22.04 LTS       | **Deprecated.** Same as `Ubuntu` with `osVersion: "22.04"`                |
+| Family                 | OS                     | Notes                                                                                  |
+|------------------------|------------------------|----------------------------------------------------------------------------------------|
+| `ContainerOptimizedOS` | Container-Optimized OS | Supports `channel` and `version`                                                       |
+| `Ubuntu`               | Ubuntu                 | Requires `osVersion` (`22.04`, `24.04`, `26.04` or `default`); supports `version` only |
+| `Ubuntu2404`           | Ubuntu 24.04 LTS       | **Deprecated.** Same as `Ubuntu` with `osVersion: "24.04"`                             |
+| `Ubuntu2204`           | Ubuntu 22.04 LTS       | **Deprecated.** Same as `Ubuntu` with `osVersion: "22.04"`                             |
 
-`osVersion` is required for `Ubuntu` and rejected for other families, so Karpenter never picks an Ubuntu release for you and never moves nodes to a new release on its own. Changing `osVersion` is an explicit image change: nodes drift and are replaced under your disruption budgets. The format is `NN.04`; a release Karpenter does not know yet fails image resolution with the supported releases listed, and adding one needs no CRD change. `version` still pins the build within that release. The deprecated `Ubuntu2404` and `Ubuntu2204` families and the `Ubuntu@...` alias (always Ubuntu 24.04) keep working and resolve identically; switching a NodeClass between the spellings does not drift nodes.
+`osVersion` is required for `Ubuntu` and rejected for other families. It is either a fixed release (`"22.04"`, `"24.04"`, `"26.04"`) or `default`:
+
+- **A fixed release** never changes on its own. Changing it is an explicit image change: nodes drift and are replaced under your disruption budgets.
+- **`default`** is the Ubuntu release GKE itself uses for the cluster's Kubernetes version, as verified by this Karpenter release. GKE documents it as 22.04 before 1.32.1 and 24.04 from 1.32.1-gke.1002000. It follows GKE, so a cluster upgrade across a version where GKE moves its default changes the release and drifts nodes to the new image, as it would for a GKE-managed Ubuntu node pool. Karpenter never guesses: above the highest verified Kubernetes minor (`1.36` in this release) or below the supported range, `default` fails with `ImageResolutionFailed` and you set `osVersion` explicitly. It is deliberately not "the newest release with images": that would pick 24.04 on 1.31 (where GKE defaults to 22.04) and 26.04 on 1.37, and would change your OS when Google publishes images rather than when you upgrade.
+- The omitted form is rejected so the choice is always visible in your manifest.
+
+The format is `NN.04` or `default`; a release Karpenter does not know yet fails image resolution with the supported releases listed, and adding one needs no CRD change. `version` still pins the build within that release. The deprecated `Ubuntu2404` and `Ubuntu2204` families and the `Ubuntu@...` alias (always Ubuntu 24.04) keep working and resolve identically to the matching fixed release; switching a NodeClass between the spellings does not drift nodes.
 
 > **Ubuntu:** Both architectures must resolve for the cluster's Kubernetes minor version from the project GKE publishes Ubuntu images in: `ubuntu-os-gke-cloud` for Kubernetes before 1.36 and `gke-ubuntu-node-images` for 1.36 and later. The controller needs permission to read that project's images, and a trusted-image-project policy or VPC Service Controls perimeter must allow it. The two projects are never mixed or used as a fallback for each other. Only clean `vYYYYMMDD` builds, optionally with a trailing letter (for example, `v20260416a`), are selected, excluding specialized builds such as `-tpu`, `-cgroupsv1`, `-linux64k`, `-64k`, `-hwe`, and `-acs`. A pin matches one build exactly, so pin a lettered build with its letter (`version: v20260416a`). A missing or `PENDING` catalog architecture yields `ImageResolutionFailed`; a selected image becoming non-READY on final lookup yields `ImageUnavailable`. Final-lookup 404s are omitted. Before pinning a date, [confirm it exists for both architectures](image-management.md#finding-available-versions).
 >

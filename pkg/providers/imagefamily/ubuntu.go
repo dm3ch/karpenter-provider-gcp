@@ -77,6 +77,67 @@ func ubuntuOSVersions() []string {
 	return versions
 }
 
+const (
+	// ubuntuReleaseDefault is the osVersion "default": the release GKE uses for the cluster version.
+	ubuntuReleaseDefault = "default"
+	// ubuntuDefaultVerifiedMinor is the highest Kubernetes 1.x minor whose GKE default Ubuntu
+	// release has been verified against GKE's documentation. Above it, osVersion "default" fails
+	// instead of guessing. TestUbuntuDefaultVerifiedThroughMaxK8sVersion ties it to
+	// versionprovider.MaxK8sVersion, so raising that maximum requires re-verifying the default.
+	ubuntuDefaultVerifiedMinor = 36
+)
+
+// ubuntuDefaults lists the release GKE uses for Ubuntu node images by default, from each Kubernetes
+// version on. Source: GKE release notes, January 2025: "Starting with GKE version 1.32.1-gke.1002000,
+// the default OS image for Ubuntu is updated from Ubuntu 22.04 to Ubuntu 24.04"
+// (https://docs.cloud.google.com/kubernetes-engine/docs/release-notes). Before that, 22.04 was the
+// default. GKE publishes no machine-readable mapping and has announced no later change.
+var ubuntuDefaults = []struct{ from, release string }{
+	{"1.28.0", "2204"},
+	{"1.32.1", "2404"},
+}
+
+// ubuntuDefaultRelease returns the release token GKE uses by default for kubernetesVersion.
+// It fails for versions outside the supported and verified range instead of guessing.
+func ubuntuDefaultRelease(kubernetesVersion string) (string, error) {
+	parsed, err := k8sversion.ParseGeneric(kubernetesVersion)
+	if err != nil {
+		return "", fmt.Errorf("parsing Kubernetes version for the default Ubuntu release: %w", err)
+	}
+	if parsed.LessThan(k8sversion.MustParseGeneric(versionprovider.MinK8sVersion)) {
+		return "", &imageResolutionError{msg: fmt.Sprintf(
+			"no default Ubuntu release for Kubernetes %s, older than the supported %s; set osVersion explicitly",
+			kubernetesVersion, versionprovider.MinK8sVersion)}
+	}
+	if parsed.Major() > 1 || parsed.Minor() > ubuntuDefaultVerifiedMinor {
+		return "", &imageResolutionError{msg: fmt.Sprintf(
+			"the default Ubuntu release of Kubernetes %s has not been verified (verified through 1.%d); set osVersion explicitly",
+			kubernetesVersion, ubuntuDefaultVerifiedMinor)}
+	}
+	release := ""
+	for _, d := range ubuntuDefaults {
+		if parsed.AtLeast(k8sversion.MustParseGeneric(d.from)) {
+			release = d.release
+		}
+	}
+	return release, nil
+}
+
+// forCluster returns the resolver for this release, resolving "default" to the release GKE uses
+// for kubernetesVersion.
+func (u *Ubuntu) forCluster(kubernetesVersion string) (*Ubuntu, error) {
+	if u.release != ubuntuReleaseDefault {
+		return u, nil
+	}
+	release, err := ubuntuDefaultRelease(kubernetesVersion)
+	if err != nil {
+		return nil, err
+	}
+	resolved := *u
+	resolved.release, resolved.defaulted = release, true
+	return &resolved, nil
+}
+
 // ubuntuReleases is keyed by the release token embedded in image names.
 var ubuntuReleases = map[string]ubuntuRelease{
 	"2204": newUbuntuRelease("2204", false, "GKE publishes Ubuntu 22.04 node images only through Kubernetes 1.31"),
@@ -86,11 +147,13 @@ var ubuntuReleases = map[string]ubuntuRelease{
 
 // Ubuntu resolves GKE Ubuntu images from the image project that serves the cluster's Kubernetes
 // minor: ubuntu-os-gke-cloud before GKE 1.36, gke-ubuntu-node-images from 1.36.
-// The release field selects the Ubuntu release: "2204", "2404" or "2604" (a key of ubuntuReleases).
+// The release field selects the Ubuntu release: a key of ubuntuReleases, or ubuntuReleaseDefault
+// to use the release GKE defaults to for the cluster's Kubernetes version.
 type Ubuntu struct {
 	computeService  *compute.Service
 	versionProvider versionprovider.Provider
 	release         string
+	defaulted       bool // release was chosen by osVersion "default"
 }
 
 func (u *Ubuntu) imagePrefix() string {
@@ -107,6 +170,10 @@ func (u *Ubuntu) ResolveImages(ctx context.Context, version string) (Images, err
 	}
 
 	kubernetesVersion, err := bootstrapVersion(ctx, u.versionProvider)
+	if err != nil {
+		return nil, err
+	}
+	u, err = u.forCluster(kubernetesVersion)
 	if err != nil {
 		return nil, err
 	}
@@ -128,6 +195,9 @@ func (u *Ubuntu) ResolveImages(ctx context.Context, version string) (Images, err
 		if !ok {
 			msg := fmt.Sprintf("no %s %s image found for version %q in %s",
 				u.imagePrefix(), arch, version, project)
+			if u.defaulted {
+				msg += fmt.Sprintf("; osVersion default selected Ubuntu %s.%s for Kubernetes %s", u.release[:2], u.release[2:], kubernetesVersion)
+			}
 			if hint := ubuntuReleases[u.release].hint; hint != "" {
 				msg += "; " + hint
 			}

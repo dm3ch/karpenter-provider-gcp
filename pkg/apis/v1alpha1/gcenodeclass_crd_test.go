@@ -282,7 +282,7 @@ func TestGCENodeClassCRDUbuntuOSVersion(t *testing.T) {
 	spec := func(term map[string]any) map[string]any {
 		return map[string]any{"imageSelectorTerms": []any{term}}
 	}
-	for _, osVersion := range []string{"22.04", "24.04", "26.04", "28.04"} {
+	for _, osVersion := range []string{"22.04", "24.04", "26.04", "28.04", "default"} {
 		requireAdmitted(t, spec(map[string]any{"family": "Ubuntu", "osVersion": osVersion, "version": "latest"}))
 	}
 	requireAdmitted(t, spec(map[string]any{"family": "Ubuntu", "osVersion": "24.04", "version": "v20251218a"}))
@@ -300,10 +300,10 @@ func TestGCENodeClassCRDUbuntuOSVersion(t *testing.T) {
 	// The release format is an OpenAPI pattern, which the CEL harness does not evaluate.
 	osVersion := specSchema(t).Properties["imageSelectorTerms"].Items.Schema.Properties["osVersion"]
 	re := regexp.MustCompile(osVersion.Pattern)
-	for _, good := range []string{"22.04", "24.04", "26.04", "28.04"} {
+	for _, good := range []string{"22.04", "24.04", "26.04", "28.04", "default"} {
 		require.True(t, re.MatchString(good), "osVersion pattern rejects %q", good)
 	}
-	for _, bad := range []string{"2404", "24.4", "24.04.1", "ubuntu", "24-04", "v24.04", "24.04\n", ""} {
+	for _, bad := range []string{"2404", "24.4", "24.04.1", "ubuntu", "24-04", "v24.04", "24.04\n", "", "defaults", "Default", "latest"} {
 		require.False(t, re.MatchString(bad), "osVersion pattern accepts %q", bad)
 	}
 }
