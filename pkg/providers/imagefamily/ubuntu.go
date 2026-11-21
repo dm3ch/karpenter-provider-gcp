@@ -81,10 +81,12 @@ const (
 	// ubuntuReleaseDefault is the osVersion "default": the release GKE uses for the cluster version.
 	ubuntuReleaseDefault = "default"
 	// ubuntuDefaultVerifiedMinor is the highest Kubernetes 1.x minor whose GKE default Ubuntu
-	// release has been verified against GKE's documentation. Above it, osVersion "default" uses the
-	// fallback release of ubuntuDefaults, with a warning. TestUbuntuDefaultVerifiedThroughMaxK8sVersion
-	// ties it to versionprovider.MaxK8sVersion, so raising that maximum requires re-verifying.
-	ubuntuDefaultVerifiedMinor = 36
+	// release has been verified: GKE's release notes document no change to the Ubuntu default since
+	// 1.32.1 (checked through 1.37). Above it, osVersion "default" uses the fallback release of
+	// ubuntuDefaults, with a warning. TestUbuntuDefaultVerifiedCoversMaxK8sVersion requires it to be
+	// at least the minor of versionprovider.MaxK8sVersion, so raising that maximum requires
+	// re-verifying the default first.
+	ubuntuDefaultVerifiedMinor = 37
 )
 
 // ubuntuDefaults lists the release GKE uses for Ubuntu node images by default, from each Kubernetes

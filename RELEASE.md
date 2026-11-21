@@ -27,7 +27,7 @@ git fetch origin && git checkout main && git reset --hard origin/main
 ```
 
 - Confirm `MaxK8sVersion` in `pkg/providers/version/version.go` reflects the latest supported GKE version.
-- When raising `MaxK8sVersion`, verify GKE's default Ubuntu release for the new minor against the [GKE release notes](https://docs.cloud.google.com/kubernetes-engine/docs/release-notes), then update `ubuntuDefaults` and `ubuntuDefaultVerifiedMinor` in `pkg/providers/imagefamily/ubuntu.go`. A unit test fails until both match. Do not guess: if GKE has not documented the default, leave `ubuntuDefaultVerifiedMinor` unchanged so `osVersion: default` keeps using the marked fallback row (with a warning) above it. If GKE documents a new default, add a row and mark it as the fallback instead.
+- When raising `MaxK8sVersion`, check the [GKE release notes](https://docs.cloud.google.com/kubernetes-engine/docs/release-notes) for a documented change of the default Ubuntu release on the new minor. If there is one, add a row to `ubuntuDefaults` in `pkg/providers/imagefamily/ubuntu.go` and mark it as the fallback. Then raise `ubuntuDefaultVerifiedMinor` to the new minor; a unit test fails until it is at least the `MaxK8sVersion` minor. Do not guess: GKE publishes no machine-readable default, so if the notes are silent the documented rule stands, and the per-patch images in `gke-ubuntu-node-images` can serve as a cross-check (see proposal 0014).
 
 ### 2. Update release artefacts and run e2e
 

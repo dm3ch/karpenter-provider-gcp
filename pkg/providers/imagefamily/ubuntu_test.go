@@ -747,8 +747,8 @@ func TestUbuntuDefaultRelease(t *testing.T) {
 		{"v1.32.13-gke.3004000", "2404", true},
 		{"v1.35.9-gke.1673000", "2404", true},
 		{"v1.36.5-gke.2262000", "2404", true},
+		{"v1.37.2-gke.1042000", "2404", true},
 		// above the verified range: the fallback (GKE's current documented default)
-		{"v1.37.2-gke.1042000", "2404", false},
 		{"v1.38.0-gke.4814000+preview", "2404", false},
 		{"v2.0.0", "2404", false},
 		// below the supported range: the oldest row, which is what GKE documents for old versions
@@ -779,13 +779,15 @@ func TestUbuntuDefaultsHaveOneFallback(t *testing.T) {
 	require.Equal(t, 1, fallbacks)
 }
 
-// TestUbuntuDefaultVerifiedThroughMaxK8sVersion makes raising the provider's maximum tested
+// TestUbuntuDefaultVerifiedCoversMaxK8sVersion makes raising the provider's maximum tested
 // Kubernetes version a deliberate act for the Ubuntu default too: the release gate in RELEASE.md
-// is to re-verify GKE's default for the new minor, then raise ubuntuDefaultVerifiedMinor.
-func TestUbuntuDefaultVerifiedThroughMaxK8sVersion(t *testing.T) {
+// is to check GKE's release notes for a default change on the new minor, add a row if there is
+// one, and then raise ubuntuDefaultVerifiedMinor. The verified range may run ahead of the maximum
+// but never behind it.
+func TestUbuntuDefaultVerifiedCoversMaxK8sVersion(t *testing.T) {
 	maxMinor := int(k8sversion.MustParseGeneric(versionprovider.MaxK8sVersion).Minor())
-	require.Equal(t, maxMinor, ubuntuDefaultVerifiedMinor,
-		"MaxK8sVersion moved: verify GKE's default Ubuntu release for the new minor, update ubuntuDefaults and ubuntuDefaultVerifiedMinor")
+	require.GreaterOrEqual(t, ubuntuDefaultVerifiedMinor, maxMinor,
+		"MaxK8sVersion moved: verify GKE's default Ubuntu release for the new minor, update ubuntuDefaults if it changed, and raise ubuntuDefaultVerifiedMinor")
 	for minor := int(k8sversion.MustParseGeneric(versionprovider.MinK8sVersion).Minor()); minor <= maxMinor; minor++ {
 		_, verified, err := ubuntuDefaultRelease(fmt.Sprintf("1.%d.1", minor))
 		require.NoError(t, err, "1.%d must have a default Ubuntu release", minor)
@@ -836,8 +838,7 @@ func TestListUbuntuOSVersionDefault(t *testing.T) {
 		"projects/gke-ubuntu-node-images/global/images/ubuntu-gke-2404-1-36-arm64-v20261117",
 	}, imageSources(got))
 
-	// Above the verified range the fallback is GKE's current documented default, 24.04, even though
-	// newer 26.04 images exist for 1.37.
+	// 26.04 images exist for 1.37, but GKE documents no default change to it: 24.04 is used.
 	got, err = list("v1.37.2-gke.1042000")
 	require.NoError(t, err)
 	require.Equal(t, []string{
