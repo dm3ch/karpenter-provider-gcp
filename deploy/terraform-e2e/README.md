@@ -8,6 +8,7 @@ Shared configuration is committed in `terraform.tfvars`:
 - Prefix: `karpenter-e2e`; resource names follow the established e2e naming
 - System pool: `default-pool`, one `n2-standard-2` node in `asia-southeast1-b` with a 30-GB boot disk
 - Release channel: `REGULAR` with `min_master_version = "1.37"`; GKE auto-upgrades within the channel. The floor exists so the cluster can run a Kubernetes minor that `STABLE` does not offer yet; specs that need a channel without that minor skip themselves. Setting or raising `min_master_version` makes the next apply upgrade the control plane, which needs the same explicit approval as any other live change
+- Node creation mode: `VIA_CONTROL_PLANE`, pinned so a change of the GKE default cannot silently change what is tested. It applies to nodes created after the change, and the provider's control-plane registration support is tracked in `proposals/0014-control-plane-node-creation.md`: until it lands, Karpenter nodes do not register on a `VIA_CONTROL_PLANE` cluster, so apply this setting deliberately
 
 Private environments override these values and use their own state; see [Private environments](#private-environments).
 - Datapath: Dataplane V2 (`ADVANCED_DATAPATH`), so Cilium/eBPF routes Services and NetworkPolicy is always enforced

@@ -11,6 +11,7 @@ cloud_observability_enabled = false
 system_machine_type         = "n2-standard-2"
 release_channel             = "REGULAR"
 min_master_version          = "1.37" # STABLE does not offer 1.37 yet
+node_creation_mode          = "VIA_CONTROL_PLANE"
 primary_cidr                = "10.0.0.0/20"
 pods_cidr                   = "10.4.0.0/14"
 services_cidr               = "10.8.0.0/20"

@@ -117,6 +117,16 @@ variable "min_master_version" {
   description = "Minimum Kubernetes control plane version for the e2e cluster, for example \"1.37\". The release channel must offer it."
 }
 
+variable "node_creation_mode" {
+  type        = string
+  default     = null
+  description = "VIA_KUBELET or VIA_CONTROL_PLANE; null leaves the mode to GKE. The e2e environment pins it so a change of the GKE default cannot silently change what is tested."
+  validation {
+    condition     = var.node_creation_mode == null ? true : contains(["VIA_KUBELET", "VIA_CONTROL_PLANE"], var.node_creation_mode)
+    error_message = "Select VIA_KUBELET or VIA_CONTROL_PLANE."
+  }
+}
+
 variable "additional_pod_ranges" {
   type        = map(string)
   default     = {}

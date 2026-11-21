@@ -10,6 +10,7 @@ module "cluster" {
   cluster_location              = var.location
   release_channel               = var.release_channel
   min_master_version            = var.min_master_version
+  node_creation_mode            = var.node_creation_mode
   node_locations                = var.node_locations
   system_node_pool_name         = "default-pool"
   system_node_locations         = var.system_node_locations
