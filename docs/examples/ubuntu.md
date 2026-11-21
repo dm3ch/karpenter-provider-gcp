@@ -6,7 +6,7 @@ See [`examples/nodeclass/ubuntu-gcenodeclass.yaml`](https://github.com/karpenter
 
 ## Follow GKE's default Ubuntu release
 
-`default` is the release GKE uses for the cluster's Kubernetes version (22.04 before 1.32.1, 24.04 from 1.32.1). A cluster upgrade across a version where GKE changes its default changes the release and drifts nodes. Above the highest Kubernetes minor this Karpenter release has verified, it fails and you set `osVersion` explicitly.
+`default` is the release GKE uses for the cluster's Kubernetes version (22.04 before 1.32.1, 24.04 from 1.32.1). A cluster upgrade across a version where GKE changes its default changes the release and drifts nodes. Above the highest Kubernetes minor this Karpenter release has verified, it uses GKE's current documented default (24.04) and logs a warning.
 
 ```yaml
 imageSelectorTerms:
