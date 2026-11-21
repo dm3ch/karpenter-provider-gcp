@@ -62,6 +62,7 @@ const (
 	// granted nodeclient, not selfnodeclient.
 	nodeClientSubresource     = "nodeclient"
 	selfNodeClientSubresource = "selfnodeclient"
+	csrRequestTimeout         = 30 * time.Second
 )
 
 var (
@@ -103,11 +104,13 @@ type ShieldedPolicyProvider interface {
 // Controller approves kubelet client CSRs for NodeClaims managed by this
 // provider.
 //
-// Reference for CSR recognition, TPM verification and SAR authorization:
-// https://github.com/kubernetes/cloud-provider-gcp/blob/master/cmd/gcp-controller-manager/node_csr_approver.go
+// Moving upstream entrypoint: https://github.com/kubernetes/cloud-provider-gcp
+// The historical public CSR approver is no longer on mainline; its pinned
+// provenance is recorded in Proposal 0012, not presented as current GKE behavior.
+// Historical attribution (not the moving review target):
+// https://github.com/kubernetes/cloud-provider-gcp/blob/de598a6a3590934e8b352db066038015b2649600/cmd/gcp-controller-manager/node_csr_approver.go
 // Copyright 2018 The Kubernetes Authors. Licensed under the Apache License, Version 2.0.
-// Check relevant changes against the current upstream implementation and keep intentional
-// standalone-VM differences explicit.
+// Consult available upstream source and keep intentional standalone-VM differences explicit.
 //
 // Differences from that implementation, required by standalone Karpenter VMs:
 // cluster membership is the managed NodeClaim and its recorded VM incarnation
@@ -142,49 +145,64 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		return reconciler.Result{}, err
 	}
 
+	// This only selects candidates; full requester/subject authorization stays below.
+	csrList.Items = slices.DeleteFunc(csrList.Items, func(csr certv1.CertificateSigningRequest) bool {
+		unsupported := csr.Spec.Username != nodePoolBootstrapUsername && csr.Spec.Username != tpmBootstrapUsername &&
+			csr.Spec.Username != legacyBootstrapUsername && !strings.HasPrefix(csr.Spec.Username, nodeUserPrefix)
+		return isDecided(&csr) || csr.Spec.SignerName != certv1.KubeAPIServerClientKubeletSignerName || unsupported
+	})
+	result := reconciler.Result{RequeueAfter: 30 * time.Second}
+	if len(csrList.Items) == 0 {
+		return result, nil
+	}
+
 	var nodeClaimList karpv1.NodeClaimList
 	if err := c.client.List(ctx, &nodeClaimList); err != nil {
 		log.FromContext(ctx).Error(err, "unable to list NodeClaims")
 		return reconciler.Result{}, err
 	}
 
-	// One request's temporary failure must not stop the others from progressing.
 	var errs []error
 	for i := range csrList.Items {
 		csr := &csrList.Items[i]
-		if isDecided(csr) {
-			continue
-		}
-
-		log.FromContext(ctx).Info("reconciling CSR", "name", csr.Name)
-		subresource, err := c.authorizeKubeletClientCSR(ctx, csr, nodeClaimList.Items)
-		if err != nil {
-			if isRetryable(err) {
-				log.FromContext(ctx).Error(err, "unable to authorize CSR, retrying", "name", csr.Name, "username", csr.Spec.Username)
-				errs = append(errs, fmt.Errorf("authorizing CSR %s: %w", csr.Name, err))
-			} else {
-				log.FromContext(ctx).V(1).Info("not approving CSR", "name", csr.Name, "username", csr.Spec.Username, "reason", err.Error())
-			}
-			continue
-		}
-
-		log.FromContext(ctx).Info("approving kubelet client CSR", "name", csr.Name, "username", csr.Spec.Username, "subresource", subresource)
-		csr.Status.Conditions = append(csr.Status.Conditions, certv1.CertificateSigningRequestCondition{
-			Type:           certv1.CertificateApproved,
-			Status:         "True",
-			Reason:         "KarpenterAutoApprover",
-			Message:        "Automatically approved by Karpenter CSR controller",
-			LastUpdateTime: metav1.Now(),
-		})
-
-		if _, err := c.kubeClient.CertificatesV1().CertificateSigningRequests().UpdateApproval(ctx, csr.Name, csr, metav1.UpdateOptions{}); err != nil {
-			// The next reconcile re-reads the request, so a lost race with another
-			// approver is reported and then treated as terminal.
-			log.FromContext(ctx).Error(err, "failed to approve CSR", "name", csr.Name)
-			errs = append(errs, fmt.Errorf("approving CSR %s: %w", csr.Name, err))
+		if err := c.reconcileCSR(ctx, csr, nodeClaimList.Items); err != nil {
+			log.FromContext(ctx).Error(err, "unable to process CSR, retrying", "name", csr.Name, "username", csr.Spec.Username)
+			errs = append(errs, err)
 		}
 	}
-	return reconciler.Result{RequeueAfter: 30 * time.Second}, errors.Join(errs...)
+	return result, errors.Join(errs...)
+}
+
+// reconcileCSR bounds one attempt, including its approval write, without sharing
+// the deadline or cancellation with other requests in the batch.
+func (c *Controller) reconcileCSR(ctx context.Context, csr *certv1.CertificateSigningRequest, claims []karpv1.NodeClaim) error {
+	ctx, cancel := context.WithTimeout(ctx, csrRequestTimeout)
+	defer cancel()
+
+	log.FromContext(ctx).Info("reconciling CSR", "name", csr.Name)
+	subresource, err := c.authorizeKubeletClientCSR(ctx, csr, claims)
+	if err != nil {
+		if isRetryable(err) {
+			return fmt.Errorf("authorizing CSR %s: %w", csr.Name, err)
+		}
+		log.FromContext(ctx).V(1).Info("not approving CSR", "name", csr.Name, "username", csr.Spec.Username, "reason", err.Error())
+		return nil
+	}
+
+	log.FromContext(ctx).Info("approving kubelet client CSR", "name", csr.Name, "username", csr.Spec.Username, "subresource", subresource)
+	csr.Status.Conditions = append(csr.Status.Conditions, certv1.CertificateSigningRequestCondition{
+		Type:           certv1.CertificateApproved,
+		Status:         "True",
+		Reason:         "KarpenterAutoApprover",
+		Message:        "Automatically approved by Karpenter CSR controller",
+		LastUpdateTime: metav1.Now(),
+	})
+	if _, err := c.kubeClient.CertificatesV1().CertificateSigningRequests().UpdateApproval(ctx, csr.Name, csr, metav1.UpdateOptions{}); err != nil {
+		// Re-list after a conflict or uncertain response, including a timeout
+		// after the API server may already have committed the approval.
+		return fmt.Errorf("approving CSR %s: %w", csr.Name, err)
+	}
+	return nil
 }
 
 // retryableError marks a temporary failure: the request stays pending and the

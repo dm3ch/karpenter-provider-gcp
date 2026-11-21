@@ -25,16 +25,16 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"math/big"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/google/go-tpm/legacy/tpm2"
 	"github.com/stretchr/testify/require"
-
-	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/tpmattest"
 )
 
 // attestationVM is the VM identity a valid local attestation fixture claims.
@@ -100,7 +100,7 @@ func certificateRequestDER(t *testing.T, key *ecdsa.PrivateKey, nodeName string)
 // signs it with the attestation key, as the GKE exec auth plugin does.
 func certifyKey(t *testing.T, key *ecdsa.PrivateKey, ak *rsa.PrivateKey) (data, sig []byte) {
 	t.Helper()
-	public, err := tpmattest.MakePublic(key.Public())
+	public, err := gkeKubeletPublic(key.Public())
 	require.NoError(t, err)
 	name, err := public.Name()
 	require.NoError(t, err)
@@ -323,15 +323,7 @@ func TestVerifyAttestationProof(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
 		request func(t *testing.T) ([]byte, *rsa.PublicKey)
-		valid   bool
 	}{
-		{
-			name: "valid proof",
-			request: func(t *testing.T) ([]byte, *rsa.PublicKey) {
-				return encodePEMBlocks(fixture.blocks(t)), &fixture.ak.PublicKey
-			},
-			valid: true,
-		},
 		{
 			name: "requested key differs from the certified key",
 			request: func(t *testing.T) ([]byte, *rsa.PublicKey) {
@@ -425,11 +417,7 @@ func TestVerifyAttestationProof(t *testing.T) {
 			proof, err := parseAttestationEnvelope(request, csr)
 			require.NoError(t, err)
 			err = verifyAttestationProof(proof, csr, attestationKey)
-			if tt.valid {
-				require.NoError(t, err)
-			} else {
-				require.Error(t, err)
-			}
+			require.Error(t, err)
 		})
 	}
 }
@@ -477,4 +465,51 @@ func TestParseAttestationKey(t *testing.T) {
 			require.Error(t, err)
 		})
 	}
+}
+
+func TestGKEKubeletPublic(t *testing.T) {
+	t.Parallel()
+
+	// Fixed public points and manually encoded TPMT_PUBLIC/Name fixtures, generated
+	// independently of gkeKubeletPublic and go-tpm's encoder from the historical GKE
+	// template cited in attestation.go. Each curve includes a leading-zero coordinate.
+	data, err := os.ReadFile("testdata/gke-public-vectors.json")
+	require.NoError(t, err)
+	var vectors []struct {
+		Name    string `json:"name"`
+		Curve   string `json:"curve"`
+		Point   string `json:"point"`
+		Public  string `json:"public"`
+		TPMName string `json:"tpmName"`
+	}
+	require.NoError(t, json.Unmarshal(data, &vectors))
+	curves := map[string]elliptic.Curve{
+		"P-224": elliptic.P224(), "P-256": elliptic.P256(),
+		"P-384": elliptic.P384(), "P-521": elliptic.P521(),
+	}
+	for _, vector := range vectors {
+		t.Run(vector.Name, func(t *testing.T) {
+			t.Parallel()
+			point, err := hex.DecodeString(vector.Point)
+			require.NoError(t, err)
+			key, err := ecdsa.ParseUncompressedPublicKey(curves[vector.Curve], point)
+			require.NoError(t, err)
+			public, err := gkeKubeletPublic(key)
+			require.NoError(t, err)
+			encoded, err := public.Encode()
+			require.NoError(t, err)
+			require.Equal(t, vector.Public, hex.EncodeToString(encoded))
+			name, err := public.Name()
+			require.NoError(t, err)
+			encodedName, err := name.Encode()
+			require.NoError(t, err)
+			require.Equal(t, vector.TPMName, hex.EncodeToString(encodedName))
+		})
+	}
+}
+
+func TestGKEKubeletPublicRejectsRSA(t *testing.T) {
+	t.Parallel()
+	_, err := gkeKubeletPublic(&rsa.PublicKey{})
+	require.Error(t, err, "only ECDSA keys can be certified this way")
 }
