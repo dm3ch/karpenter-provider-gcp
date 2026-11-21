@@ -58,6 +58,11 @@ var _ = DescribeTable("ChannelImageSelection", Label("suite:channel-image-select
 	Entry("Ubuntu osVersion 24.04 / version: latest / amd64 / on-demand",
 		familyChannelTestCase{family: gcpv1alpha1.ImageFamilyUbuntu, osVersion: "24.04", version: "latest"},
 		SpecTimeout(15*time.Minute)),
+	// osVersion default follows GKE's default Ubuntu release for the cluster version, which is
+	// 24.04 on the 1.32.1 to 1.36 clusters this suite runs on.
+	Entry("Ubuntu osVersion default / version: latest / amd64 / on-demand",
+		familyChannelTestCase{family: gcpv1alpha1.ImageFamilyUbuntu, osVersion: gcpv1alpha1.ImageOSVersionDefault, version: "latest"},
+		SpecTimeout(15*time.Minute)),
 	// The deprecated per-release family must keep resolving to the same image.
 	Entry("Ubuntu2404 (deprecated) / version: latest / amd64 / on-demand",
 		familyChannelTestCase{family: gcpv1alpha1.ImageFamilyUbuntu2404, version: "latest"},
@@ -117,7 +122,7 @@ func runChannelImageSelectionTest(ctx context.Context, tc familyChannelTestCase)
 		Expect(sourceImages[0]).To(ContainSubstring(expectedSubstr),
 			"resolved COS image does not match channel %s version %s (expected pattern %s in %s)",
 			tc.channel, expectedGKEVersion, expectedSubstr, sourceImages[0])
-	case tc.version == "latest" && (tc.family == gcpv1alpha1.ImageFamilyUbuntu2404 || tc.osVersion == "24.04"):
+	case tc.version == "latest" && (tc.family == gcpv1alpha1.ImageFamilyUbuntu2404 || tc.osVersion == "24.04" || tc.osVersion == gcpv1alpha1.ImageOSVersionDefault):
 		// For version: latest, the resolved image must embed the independently-queried Ubuntu 24.04 version.
 		expectedVer := env.ResolveCurrentUbuntuVersion(ctx)
 		Expect(sourceImages[0]).To(ContainSubstring("ubuntu-gke-2404-"),

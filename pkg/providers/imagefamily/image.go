@@ -91,6 +91,7 @@ func NewDefaultProvider(computeService *compute.Service, versionProvider version
 	for release := range ubuntuReleases {
 		ubuntu[release] = &Ubuntu{computeService: computeService, versionProvider: versionProvider, release: release}
 	}
+	ubuntu[ubuntuReleaseDefault] = &Ubuntu{computeService: computeService, versionProvider: versionProvider, release: ubuntuReleaseDefault}
 	return &DefaultProvider{
 		cache:           cache.New(imageCacheTTL, imageCacheCleanupInterval),
 		computeService:  computeService,
@@ -251,7 +252,7 @@ func (p *DefaultProvider) resolveVersion(ctx context.Context, term v1alpha1.Imag
 	return version, nil
 }
 
-// imageFamilyProvider returns the resolver for a family and, for Ubuntu, its release ("24.04").
+// imageFamilyProvider returns the resolver for a family and, for Ubuntu, its release ("24.04" or "default").
 // An empty Ubuntu osVersion means the legacy alias, which is 24.04; the deprecated Ubuntu2204 and
 // Ubuntu2404 families carry their release in the name. An unavailable release is a configuration
 // error, never a fallback to another release.
@@ -266,7 +267,11 @@ func (p *DefaultProvider) imageFamilyProvider(family, osVersion string) (ImageFa
 		release = "2404"
 	case v1alpha1.ImageFamilyUbuntu:
 		release = "2404"
-		if osVersion != "" {
+		switch osVersion {
+		case "":
+		case v1alpha1.ImageOSVersionDefault:
+			release = ubuntuReleaseDefault
+		default:
 			release = strings.Replace(osVersion, ".", "", 1)
 		}
 	default:
@@ -274,8 +279,8 @@ func (p *DefaultProvider) imageFamilyProvider(family, osVersion string) (ImageFa
 	}
 	provider, ok := p.ubuntu[release]
 	if !ok {
-		return nil, &imageResolutionError{msg: fmt.Sprintf("unsupported Ubuntu osVersion %q: supported releases are %s",
-			osVersion, strings.Join(ubuntuOSVersions(), ", "))}
+		return nil, &imageResolutionError{msg: fmt.Sprintf("unsupported Ubuntu osVersion %q: supported releases are %s, or %q",
+			osVersion, strings.Join(ubuntuOSVersions(), ", "), v1alpha1.ImageOSVersionDefault)}
 	}
 	return provider, nil
 }

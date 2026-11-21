@@ -276,7 +276,7 @@ type AdditionalNetworkInterface struct {
 // +kubebuilder:validation:XValidation:message="Ubuntu2404 version must be 'latest' or 'vYYYYMMDD' with an optional release letter (e.g. 'v20260416', 'v20251218a')",rule="!has(self.version) || !has(self.family) || self.family != 'Ubuntu2404' || self.version == 'latest' || self.version.matches('^v[0-9]{8}[a-z]?$')"
 // +kubebuilder:validation:XValidation:message="Ubuntu2204 version must be 'latest' or 'vYYYYMMDD' with an optional release letter (e.g. 'v20260416', 'v20251218a')",rule="!has(self.version) || !has(self.family) || self.family != 'Ubuntu2204' || self.version == 'latest' || self.version.matches('^v[0-9]{8}[a-z]?$')"
 // +kubebuilder:validation:XValidation:message="Ubuntu version must be 'latest' or 'vYYYYMMDD' with an optional release letter (e.g. 'v20260416', 'v20251218a')",rule="!has(self.version) || !has(self.family) || self.family != 'Ubuntu' || self.version == 'latest' || self.version.matches('^v[0-9]{8}[a-z]?$')"
-// +kubebuilder:validation:XValidation:message="family Ubuntu requires osVersion (for example '24.04'); Karpenter never picks an Ubuntu release for you",rule="!has(self.family) || self.family != 'Ubuntu' || has(self.osVersion)"
+// +kubebuilder:validation:XValidation:message="family Ubuntu requires osVersion: a release such as '24.04', or 'default' for the Ubuntu release GKE uses by default for the cluster version",rule="!has(self.family) || self.family != 'Ubuntu' || has(self.osVersion)"
 // +kubebuilder:validation:XValidation:message="osVersion is only supported for family Ubuntu",rule="!has(self.osVersion) || (has(self.family) && self.family == 'Ubuntu')"
 type ImageSelectorTerm struct {
 	// Deprecated: use Family with Channel or Version instead.
@@ -300,13 +300,16 @@ type ImageSelectorTerm struct {
 	// +kubebuilder:validation:Enum=ContainerOptimizedOS;Ubuntu;Ubuntu2404;Ubuntu2204
 	// +optional
 	Family string `json:"family,omitempty"`
-	// OSVersion selects the Ubuntu release for family Ubuntu, for example "24.04". It is required
-	// for Ubuntu and not allowed for other families, so Karpenter never moves nodes to a new Ubuntu
-	// release on its own. GKE publishes each release only for some Kubernetes minors; an
-	// unavailable release fails image resolution instead of falling back to another one.
+	// OSVersion selects the Ubuntu release for family Ubuntu: a release such as "24.04", or
+	// "default" for the release GKE uses by default for the cluster's Kubernetes version. It is
+	// required for Ubuntu and not allowed for other families. A fixed release never changes on its
+	// own; "default" follows GKE and can change when the cluster is upgraded across a version GKE
+	// moved its default at, which drifts nodes to the new image. GKE publishes each release only
+	// for some Kubernetes minors; an unavailable release, or a cluster version whose default has
+	// not been verified, fails image resolution instead of falling back to another release.
 	// Version still pins the image build within the release.
-	// +kubebuilder:validation:Pattern=`^[0-9]{2}\.[0-9]{2}$`
-	// +kubebuilder:validation:MaxLength=5
+	// +kubebuilder:validation:Pattern=`^(default|[0-9]{2}\.[0-9]{2})$`
+	// +kubebuilder:validation:MaxLength=7
 	// +optional
 	OSVersion string `json:"osVersion,omitempty"`
 	// Channel specifies the GKE release channel to follow. Only valid when Family is ContainerOptimizedOS.

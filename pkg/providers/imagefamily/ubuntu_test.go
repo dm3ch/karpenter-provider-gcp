@@ -19,6 +19,7 @@ package imagefamily
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -26,8 +27,10 @@ import (
 
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/compute/v1"
+	k8sversion "k8s.io/apimachinery/pkg/util/version"
 
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/apis/v1alpha1"
+	versionprovider "github.com/karpenter-gcp/karpenter-provider-gcp/pkg/providers/version"
 )
 
 func TestResolveImages_UbuntuRequiresMasterSnapshot(t *testing.T) {
@@ -726,4 +729,89 @@ func TestListUbuntuOSVersionSelectsRelease(t *testing.T) {
 	_, err = list(v1alpha1.ImageSelectorTerm{Family: "Ubuntu", OSVersion: "20.04", Version: "latest"})
 	require.True(t, IsImageResolutionError(err))
 	require.ErrorContains(t, err, "22.04, 24.04, 26.04")
+}
+
+// TestUbuntuDefaultRelease protects osVersion "default": it follows the release GKE documents as its
+// Ubuntu default (22.04 before 1.32.1, 24.04 from 1.32.1-gke.1002000), including the patch-level
+// boundary, and fails closed for versions that are unsupported or whose default is not verified.
+func TestUbuntuDefaultRelease(t *testing.T) {
+	tests := map[string]string{
+		"v1.28.1-gke.100":      "2204",
+		"1.31.14-gke.2116000":  "2204",
+		"v1.32.0-gke.1000000":  "2204",
+		"v1.32.1-gke.1002000":  "2404",
+		"v1.32.13-gke.3004000": "2404",
+		"v1.35.9-gke.1673000":  "2404",
+		"v1.36.5-gke.2262000":  "2404",
+	}
+	for version, want := range tests {
+		got, err := ubuntuDefaultRelease(version)
+		require.NoError(t, err, version)
+		require.Equal(t, want, got, version)
+	}
+	for _, version := range []string{"v1.27.9-gke.1", "v1.37.2-gke.1042000", "v1.38.0-gke.4814000+preview"} {
+		_, err := ubuntuDefaultRelease(version)
+		require.Error(t, err, version)
+		require.True(t, IsImageResolutionError(err), version)
+		require.ErrorContains(t, err, "set osVersion explicitly", version)
+	}
+	_, err := ubuntuDefaultRelease("not-a-version")
+	require.Error(t, err)
+}
+
+// TestUbuntuDefaultVerifiedThroughMaxK8sVersion makes raising the provider's maximum tested
+// Kubernetes version a deliberate act for the Ubuntu default too: the release gate in RELEASE.md
+// is to re-verify GKE's default for the new minor, then raise ubuntuDefaultVerifiedMinor.
+func TestUbuntuDefaultVerifiedThroughMaxK8sVersion(t *testing.T) {
+	maxMinor := int(k8sversion.MustParseGeneric(versionprovider.MaxK8sVersion).Minor())
+	require.Equal(t, maxMinor, ubuntuDefaultVerifiedMinor,
+		"MaxK8sVersion moved: verify GKE's default Ubuntu release for the new minor, update ubuntuDefaults and ubuntuDefaultVerifiedMinor")
+	for minor := int(k8sversion.MustParseGeneric(versionprovider.MinK8sVersion).Minor()); minor <= maxMinor; minor++ {
+		_, err := ubuntuDefaultRelease(fmt.Sprintf("1.%d.1", minor))
+		require.NoError(t, err, "1.%d must have a default Ubuntu release", minor)
+	}
+}
+
+// TestListUbuntuOSVersionDefault protects resolving osVersion "default" through the provider:
+// the release and image project both follow the cluster version, and a cluster version whose
+// default is unverified is a configuration error instead of a guess.
+func TestListUbuntuOSVersionDefault(t *testing.T) {
+	// The catalog server ignores the project; names are distinct per release and minor, and the
+	// project in each resolved source image comes from the resolver.
+	srv := imageCatalogServer(t, &imageCatalog{pages: [][]*compute.Image{{
+		{Name: "ubuntu-gke-2404-1-36-arm64-v20261117", Status: "READY"},
+		{Name: "ubuntu-gke-2404-1-36-amd64-v20261117", Status: "READY"},
+		{Name: "ubuntu-gke-2604-1-37-amd64-v20260925", Status: "READY"},
+		{Name: "ubuntu-gke-2204-1-31-arm64-v20260810", Status: "READY"},
+		{Name: "ubuntu-gke-2204-1-31-v20260810", Status: "READY"},
+		{Name: "ubuntu-gke-2404-1-31-arm64-v20240916", Status: "READY"},
+		{Name: "ubuntu-gke-2404-1-31-amd64-v20240916", Status: "READY"},
+	}}})
+	defer srv.Close()
+	list := func(clusterVersion string) (Images, error) {
+		p := NewDefaultProvider(buildComputeService(t, srv), &fakeVersionProvider{version: clusterVersion}, &stubGKEProvider{})
+		return p.List(context.Background(), &v1alpha1.GCENodeClass{Spec: v1alpha1.GCENodeClassSpec{
+			ImageSelectorTerms: []v1alpha1.ImageSelectorTerm{{Family: "Ubuntu", OSVersion: "default", Version: "latest"}},
+		}})
+	}
+
+	// 1.31 still defaults to 22.04 even though 24.04 images exist for it ("newest available" would differ).
+	got, err := list("v1.31.14-gke.2116000")
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"projects/ubuntu-os-gke-cloud/global/images/ubuntu-gke-2204-1-31-v20260810",
+		"projects/ubuntu-os-gke-cloud/global/images/ubuntu-gke-2204-1-31-arm64-v20260810",
+	}, imageSources(got))
+
+	got, err = list("v1.36.5-gke.2262000")
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"projects/gke-ubuntu-node-images/global/images/ubuntu-gke-2404-1-36-amd64-v20261117",
+		"projects/gke-ubuntu-node-images/global/images/ubuntu-gke-2404-1-36-arm64-v20261117",
+	}, imageSources(got))
+
+	// 26.04 images exist for 1.37, but GKE has not documented them as the default.
+	_, err = list("v1.37.2-gke.1042000")
+	require.True(t, IsImageResolutionError(err))
+	require.ErrorContains(t, err, "has not been verified")
 }

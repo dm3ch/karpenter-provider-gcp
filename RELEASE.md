@@ -26,7 +26,8 @@ One week before a minor release:
 git fetch origin && git checkout main && git reset --hard origin/main
 ```
 
-- Confirm `maxKubernetesVersion` in the codebase reflects the latest supported GKE version.
+- Confirm `MaxK8sVersion` in `pkg/providers/version/version.go` reflects the latest supported GKE version.
+- When raising `MaxK8sVersion`, verify GKE's default Ubuntu release for the new minor against the [GKE release notes](https://docs.cloud.google.com/kubernetes-engine/docs/release-notes), then update `ubuntuDefaults` and `ubuntuDefaultVerifiedMinor` in `pkg/providers/imagefamily/ubuntu.go`. A unit test fails until both match. Do not guess: if GKE has not documented the default, leave `ubuntuDefaultVerifiedMinor` unchanged so `osVersion: default` keeps failing closed above it.
 
 ### 2. Update release artefacts and run e2e
 

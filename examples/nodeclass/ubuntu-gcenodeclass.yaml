@@ -12,6 +12,10 @@ spec:
     # - family: Ubuntu
     #   osVersion: "24.04"
     #   version: latest
+    # Or follow the Ubuntu release GKE uses for the cluster's Kubernetes version:
+    # - family: Ubuntu
+    #   osVersion: default
+    #   version: latest
   labels:
     env: dev
   networkTags:

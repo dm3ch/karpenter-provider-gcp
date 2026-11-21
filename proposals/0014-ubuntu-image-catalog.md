@@ -48,9 +48,9 @@ A table keyed by release token (`2204`, `2404`, `2604`) holds the clean-name all
 
 ### `osVersion`
 
-`imageSelectorTerms[].osVersion` (pattern `^[0-9]{2}\.[0-9]{2}$`) selects the Ubuntu release. Rules:
+`imageSelectorTerms[].osVersion` (pattern `^(default|[0-9]{2}\.[0-9]{2})$`) selects the Ubuntu release: a fixed release or `default`. Rules:
 
-- `family: Ubuntu` requires `osVersion`; every other family rejects it. There is no default, so Karpenter never chooses an OS major, and changing it is an explicit image change that drifts nodes under the NodePool's disruption budgets. Proposal 0002 rejected a bare `Ubuntu` family for exactly this reason; the field provides the explicit release it asked for.
+- `family: Ubuntu` requires `osVersion`; every other family rejects it. Omission is rejected, so the OS choice is always visible in the manifest and no default can silently apply. Proposal 0002 rejected a bare `Ubuntu` family for exactly this reason. Relaxing "required" to "optional" later is compatible; the reverse is breaking, so the strict form ships first.
 - `version` keeps meaning the build pin within the release (`latest` or `vYYYYMMDD[a-z]`). It cannot carry the release because builds of different releases share dates.
 - `channel` stays COS-only.
 - The name follows GKE `windowsNodeConfig.osVersion` ("OS version" selects the release of an OS family). GKE `imageType` has no Ubuntu release selector, so there is no closer equivalent.
@@ -58,6 +58,16 @@ A table keyed by release token (`2204`, `2404`, `2604`) holds the clean-name all
 - `Ubuntu2404` and `Ubuntu2204` are deprecated, frozen at those two values, and resolve exactly like `Ubuntu` with `osVersion: "24.04"`/`"22.04"`. The `Ubuntu@...` alias remains Ubuntu 24.04. No `Ubuntu2604` family is added: new releases exist only in the new shape. Switching a NodeClass between spellings does not drift nodes (`imageSelectorTerms` is excluded from the NodeClass hash and image drift compares image names).
 
 All releases map to the internal `Ubuntu` family, so bootstrap and swap handling are shared. 26.04 bootstrap behavior is validated by E2E, not assumed.
+
+### `osVersion: default`
+
+GKE has default-release logic, but it is internal: the only documented rule is the GKE release note "Starting with GKE version 1.32.1-gke.1002000, the default OS image for Ubuntu is updated from Ubuntu 22.04 to Ubuntu 24.04", and `ServerConfig`/`NodeConfig` expose only the image type. `default` replicates that rule from a small sourced table (`ubuntuDefaults`: 22.04 up to 1.32.0, 24.04 from 1.32.1), including its patch-level boundary, and nothing else:
+
+- It fails closed (`ImageResolutionFailed`, "set osVersion explicitly") below the supported minimum and above `ubuntuDefaultVerifiedMinor` (1.36 now), instead of guessing. 26.04 images exist for 1.37 and 1.38, but GKE documents no default change to it, so they are not inferred.
+- It is not "newest release with images", which would choose 24.04 on 1.31 (GKE defaults to 22.04) and 26.04 on 1.37, and would flip nodes when Google publishes images instead of when the user upgrades.
+- It follows GKE across cluster upgrades: crossing 1.32.1 changes the release and drifts nodes, exactly as for a GKE-managed pool. Fixed releases never change on their own.
+- Release gate: `ubuntuDefaultVerifiedMinor` is tied by a unit test to `MaxK8sVersion`. Raising the maximum fails the test until the default for the new minor is verified and the table and constant are updated; `RELEASE.md` lists this step. If GKE documents nothing, the constant stays and `default` keeps failing closed above it.
+- The resolver gets the cluster version from the same API-server snapshot used for image discovery and bootstrap, so release, project and bootstrap version cannot disagree.
 
 ### Drift across the Ubuntu projects
 
@@ -84,7 +94,8 @@ Image drift treats a node's boot image as the published image when the full path
 - 26.04 resolution beside `-hwe`/`-tpu`/`-64k`/`-acs`.
 - A release with no image for the minor fails with project/release (and the 22.04 hint); an unknown `osVersion` lists the supported releases.
 - `family`/`osVersion` routing: `Ubuntu`+`osVersion`, `Ubuntu2404`, `Ubuntu@latest` and `Ubuntu2404@latest` resolve identically for 24.04.
-- CRD admission (generated CEL): `Ubuntu` requires `osVersion`, other families reject it, malformed releases are rejected, deprecated families still admit.
+- CRD admission (generated CEL): `Ubuntu` requires `osVersion`, other families reject it, malformed releases are rejected, `default` is admitted, deprecated families still admit.
+- `default`: sourced boundaries (1.31 vs 1.32.0 vs 1.32.1), unsupported and unverified versions fail closed, 1.31 resolves 22.04 although 24.04 images exist, and `ubuntuDefaultVerifiedMinor` equals the `MaxK8sVersion` minor.
 - Drift: same name from the other Ubuntu project does not drift; older build, other arch or unrelated project does.
 
 ### E2E / Integration Tests
@@ -108,5 +119,6 @@ Rejected for now: the embedded release is not reliably decodable for Ubuntu and 
 
 ## Future Direction
 
+- Omission of `osVersion` meaning `default`, if users find the explicit form noisy.
 - Release-channel-aware Ubuntu selection once the `-c-pre` naming is understood.
 - Dropping the legacy project once Google stops publishing there.

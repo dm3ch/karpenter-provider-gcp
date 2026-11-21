@@ -91,6 +91,9 @@ var (
 	ImageFamilyContainerOptimizedOS = "ContainerOptimizedOS"
 	ImageFamilyCustom               = "Custom"
 
+	// ImageOSVersionDefault selects the Ubuntu release GKE uses by default for the cluster version.
+	ImageOSVersionDefault = "default"
+
 	ImageChannelRapid    = "rapid"
 	ImageChannelRegular  = "regular"
 	ImageChannelStable   = "stable"

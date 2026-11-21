@@ -1,8 +1,19 @@
 # Ubuntu nodes
 
-Use Ubuntu instead of Container-Optimized OS when workloads require a general-purpose Linux distribution. `osVersion` is required: Karpenter never picks an Ubuntu release for you. The older `Ubuntu2404`/`Ubuntu2204` families still work but are deprecated.
+Use Ubuntu instead of Container-Optimized OS when workloads require a general-purpose Linux distribution. `osVersion` is required: either a fixed release or `default`, the release GKE uses for your cluster version. The older `Ubuntu2404`/`Ubuntu2204` families still work but are deprecated.
 
 See [`examples/nodeclass/ubuntu-gcenodeclass.yaml`](https://github.com/karpenter-gcp/karpenter-provider-gcp/blob/main/examples/nodeclass/ubuntu-gcenodeclass.yaml).
+
+## Follow GKE's default Ubuntu release
+
+`default` is the release GKE uses for the cluster's Kubernetes version (22.04 before 1.32.1, 24.04 from 1.32.1). A cluster upgrade across a version where GKE changes its default changes the release and drifts nodes. Above the highest Kubernetes minor this Karpenter release has verified, it fails and you set `osVersion` explicitly.
+
+```yaml
+imageSelectorTerms:
+  - family: Ubuntu
+    osVersion: default
+    version: latest
+```
 
 ## Ubuntu 26.04
 
