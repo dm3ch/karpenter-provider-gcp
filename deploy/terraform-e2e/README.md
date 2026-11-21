@@ -8,7 +8,7 @@ Shared configuration is committed in `terraform.tfvars`:
 - Prefix: `karpenter-e2e`; resource names follow the established e2e naming
 - System pool: `default-pool`, one `n2-standard-2` node in `asia-southeast1-b` with a 30-GB boot disk
 - Release channel: `REGULAR` with `min_master_version = "1.37"`; GKE auto-upgrades within the channel. The floor exists so the cluster can run a Kubernetes minor that `STABLE` does not offer yet; specs that need a channel without that minor skip themselves. Setting or raising `min_master_version` makes the next apply upgrade the control plane, which needs the same explicit approval as any other live change
-- Node creation mode: `VIA_CONTROL_PLANE`, pinned so a change of the GKE default cannot silently change what is tested. It applies to nodes created after the change, and the provider's control-plane registration support is tracked in `proposals/0014-control-plane-node-creation.md`: until it lands, Karpenter nodes do not register on a `VIA_CONTROL_PLANE` cluster, so apply this setting deliberately
+- Node creation mode: `VIA_KUBELET`, pinned so a change of the GKE default cannot silently change what is tested. The control-plane mode is covered by the separate [`karpenter-e2e-cp` profile](#profiles)
 
 Private environments override these values and use their own state; see [Private environments](#private-environments).
 - Datapath: Dataplane V2 (`ADVANCED_DATAPATH`), so Cilium/eBPF routes Services and NetworkPolicy is always enforced
@@ -36,6 +36,31 @@ The shared project already contains a `karpenter_controller` custom role. If Ter
 terraform import 'module.cluster.google_project_iam_custom_role.karpenter_controller' \
   projects/planetscale-karp-gcp-e2e/roles/karpenter_controller
 ```
+
+## Profiles
+
+A profile is a second environment in the same project with its own prefix, state and cluster, selected by layering a
+committed variable file over `terraform.tfvars`. `profiles/control-plane.tfvars` creates `karpenter-e2e-cp`
+with `node_creation_mode = "VIA_CONTROL_PLANE"`. It exists because GKE is moving to control plane node creation
+(see `proposals/0014-control-plane-node-creation.md`) while the provider cannot yet register nodes in that mode, so
+the shared `karpenter-e2e` cluster stays `VIA_KUBELET`. The profile has the same region, zones, release channel and
+Kubernetes floor as the shared cluster, its own VPC (so CIDRs may repeat), registry, service accounts, tag key and
+controller role, and about the cost of a second regional control plane plus one system node.
+
+Use a separate Terraform data directory so the shared backend initialization is never overwritten:
+
+```sh
+cd deploy/terraform-e2e
+export TF_DATA_DIR=.terraform-cp
+terraform init -reconfigure -input=false -lockfile=readonly -backend-config=profiles/control-plane.tfbackend
+terraform plan -var-file=profiles/control-plane.tfvars
+```
+
+Creating, applying, and destroying a profile are live operations that need the same explicit approval as the shared
+environment. Do not run two profiles' test suites at the same time; their combined quota at 20 workers is not sized
+for it. Deploy and test with `E2E_PREFIX=karpenter-e2e-cp` (and its `node_service_account` output); every Make target and
+script derives the cluster, ranges, registry and tag key from the prefix. `clusters.get` keeps reporting an old
+`nodeCreationConfig` until a mode change finishes, so confirm the mode after the cluster returns to `RUNNING`.
 
 ## Private environments
 

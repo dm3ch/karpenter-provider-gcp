@@ -1,12 +1,15 @@
 .terraform/
+.terraform-*/
 *.tfstate
 *.tfstate.*
 *.tfplan
 *.tfvars
 !terraform.tfvars
+!profiles/*.tfvars
 *.tfvars.json
 *.tfplan.*
 *.tfbackend
+!profiles/*.tfbackend
 # Terraform override files and per-user state (private environments)
 override.tf
 override.tf.json

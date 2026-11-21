@@ -1,0 +1,2 @@
+bucket = "planetscale-karp-gcp-e2e-tfstate"
+prefix = "karpenter/e2e-cp"

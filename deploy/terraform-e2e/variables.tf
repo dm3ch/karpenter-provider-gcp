@@ -54,14 +54,14 @@ variable "system_node_locations" {
 
 variable "prefix" {
   type        = string
-  description = "Resource name prefix. Use a name unique to your project unless you are the shared target."
+  description = "Resource name prefix. Use a name unique to your project unless you are the shared target or one of its committed profiles (profiles/)."
   validation {
     condition     = can(regex("^[a-z][a-z0-9-]{0,19}$", var.prefix))
     error_message = "Use a lowercase resource prefix starting with a letter and no longer than 20 characters."
   }
   validation {
-    condition     = var.project_id != "planetscale-karp-gcp-e2e" || var.prefix == "karpenter-e2e"
-    error_message = "The sponsored project is reserved for the shared karpenter-e2e target; run a private environment in your own project."
+    condition     = var.project_id != "planetscale-karp-gcp-e2e" || contains(["karpenter-e2e", "karpenter-e2e-cp"], var.prefix)
+    error_message = "The sponsored project is reserved for the shared karpenter-e2e target and its control-plane profile karpenter-e2e-cp; run any other environment in your own project."
   }
 }
 
