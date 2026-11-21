@@ -188,7 +188,7 @@ Pending CSRs for Karpenter nodes should be approved automatically. If they are s
 - for a TPM-attested node, its vTPM is enabled and its Compute instance was not replaced after the claim was launched;
 - for a `kubelet` (legacy) request, the cluster really has Shielded GKE Nodes disabled and the controller can read the cluster (`container.clusters.get`). An enabled, absent or unreadable setting leaves the request pending, and the debug log names the reason. Re-check after changing the cluster setting: the controller reads it again on every attempt.
 
-[Proposal 0012](../proposals/0012-gce-instance-bound-csr-approval.md) records the supported image/GKE matrix and the pending real-GKE reissuance and drain validation.
+[Proposal 0015](../proposals/0015-gce-instance-bound-csr-approval.md) records the supported image/GKE matrix and the pending real-GKE reissuance and drain validation.
 
 ---
 

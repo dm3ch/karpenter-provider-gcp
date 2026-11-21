@@ -109,7 +109,7 @@ type ShieldedPolicyProvider interface {
 //
 // Moving upstream entrypoint: https://github.com/kubernetes/cloud-provider-gcp
 // The historical public CSR approver is no longer on mainline; its pinned
-// provenance is recorded in Proposal 0012, not presented as current GKE behavior.
+// provenance is recorded in Proposal 0015, not presented as current GKE behavior.
 // Historical attribution (not the moving review target):
 // https://github.com/kubernetes/cloud-provider-gcp/blob/de598a6a3590934e8b352db066038015b2649600/cmd/gcp-controller-manager/node_csr_approver.go
 // Copyright 2018 The Kubernetes Authors. Licensed under the Apache License, Version 2.0.
