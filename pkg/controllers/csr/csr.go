@@ -65,6 +65,7 @@ const (
 	// granted nodeclient, not selfnodeclient.
 	nodeClientSubresource     = "nodeclient"
 	selfNodeClientSubresource = "selfnodeclient"
+	csrRequestTimeout         = 30 * time.Second
 )
 
 var (
@@ -106,11 +107,13 @@ type ShieldedPolicyProvider interface {
 // Controller approves kubelet client CSRs for NodeClaims managed by this
 // provider.
 //
-// Reference for CSR recognition, TPM verification and SAR authorization:
-// https://github.com/kubernetes/cloud-provider-gcp/blob/master/cmd/gcp-controller-manager/node_csr_approver.go
+// Moving upstream entrypoint: https://github.com/kubernetes/cloud-provider-gcp
+// The historical public CSR approver is no longer on mainline; its pinned
+// provenance is recorded in Proposal 0012, not presented as current GKE behavior.
+// Historical attribution (not the moving review target):
+// https://github.com/kubernetes/cloud-provider-gcp/blob/de598a6a3590934e8b352db066038015b2649600/cmd/gcp-controller-manager/node_csr_approver.go
 // Copyright 2018 The Kubernetes Authors. Licensed under the Apache License, Version 2.0.
-// Check relevant changes against the current upstream implementation and keep intentional
-// standalone-VM differences explicit.
+// Consult available upstream source and keep intentional standalone-VM differences explicit.
 //
 // Differences from that implementation, required by standalone Karpenter VMs:
 // cluster membership is the managed NodeClaim and its recorded VM incarnation
@@ -147,57 +150,91 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		return reconciler.Result{}, err
 	}
 
+	approved, pending := partitionCSRs(csrList.Items)
+	csrList.Items = pending
+	result := reconciler.Result{RequeueAfter: 30 * time.Second}
+	if len(csrList.Items) == 0 && len(approved) == 0 {
+		return result, nil
+	}
+
 	var nodeClaimList karpv1.NodeClaimList
 	if err := c.client.List(ctx, &nodeClaimList); err != nil {
 		log.FromContext(ctx).Error(err, "unable to list NodeClaims")
 		return reconciler.Result{}, err
 	}
 
-	// Retry before the approval loop below, which marks requests in csrList
-	// approved before the approval is written.
-	c.recordMissedEnrollments(ctx, csrList.Items, nodeClaimList.Items)
+	c.recordMissedEnrollments(ctx, approved, nodeClaimList.Items)
 
-	// One request's temporary failure must not stop the others from progressing.
 	var errs []error
 	for i := range csrList.Items {
 		csr := &csrList.Items[i]
-		if isDecided(csr) {
-			continue
-		}
-
-		log.FromContext(ctx).Info("reconciling CSR", "name", csr.Name)
-		subresource, enrolled, err := c.authorizeKubeletClientCSR(ctx, csr, nodeClaimList.Items)
-		if err != nil {
-			if isRetryable(err) {
-				log.FromContext(ctx).Error(err, "unable to authorize CSR, retrying", "name", csr.Name, "username", csr.Spec.Username)
-				errs = append(errs, fmt.Errorf("authorizing CSR %s: %w", csr.Name, err))
-			} else {
-				log.FromContext(ctx).V(1).Info("not approving CSR", "name", csr.Name, "username", csr.Spec.Username, "reason", err.Error())
-			}
-			continue
-		}
-
-		log.FromContext(ctx).Info("approving kubelet client CSR", "name", csr.Name, "username", csr.Spec.Username, "subresource", subresource)
-		csr.Status.Conditions = append(csr.Status.Conditions, certv1.CertificateSigningRequestCondition{
-			Type:           certv1.CertificateApproved,
-			Status:         "True",
-			Reason:         autoApproverReason,
-			Message:        "Automatically approved by Karpenter CSR controller",
-			LastUpdateTime: metav1.Now(),
-		})
-
-		if _, err := c.kubeClient.CertificatesV1().CertificateSigningRequests().UpdateApproval(ctx, csr.Name, csr, metav1.UpdateOptions{}); err != nil {
-			// The next reconcile re-reads the request, so a lost race with another
-			// approver is reported and then treated as terminal.
-			log.FromContext(ctx).Error(err, "failed to approve CSR", "name", csr.Name)
-			errs = append(errs, fmt.Errorf("approving CSR %s: %w", csr.Name, err))
-			continue
-		}
-		if enrolled != nil {
-			c.recordEnrollment(ctx, enrolled)
+		if err := c.reconcileCSR(ctx, csr, nodeClaimList.Items); err != nil {
+			log.FromContext(ctx).Error(err, "unable to process CSR, retrying", "name", csr.Name, "username", csr.Spec.Username)
+			errs = append(errs, err)
 		}
 	}
-	return reconciler.Result{RequeueAfter: 30 * time.Second}, errors.Join(errs...)
+	return result, errors.Join(errs...)
+}
+
+// partitionCSRs splits the listed requests into those this controller approved
+// earlier, which only feed the enrollment retry, and the undecided candidates for
+// approval. Candidate selection only narrows the set; full requester/subject
+// authorization stays in authorizeKubeletClientCSR.
+func partitionCSRs(csrs []certv1.CertificateSigningRequest) (approved, pending []certv1.CertificateSigningRequest) {
+	for _, csr := range csrs {
+		switch {
+		case csr.Spec.SignerName != certv1.KubeAPIServerClientKubeletSignerName:
+		case approvedByController(&csr):
+			approved = append(approved, csr)
+		case isDecided(&csr) || !isCandidateRequester(csr.Spec.Username):
+		default:
+			pending = append(pending, csr)
+		}
+	}
+	return approved, pending
+}
+
+func isCandidateRequester(username string) bool {
+	return isBootstrapRequester(username) || strings.HasPrefix(username, nodeUserPrefix)
+}
+
+func isBootstrapRequester(username string) bool {
+	return username == nodePoolBootstrapUsername || username == tpmBootstrapUsername || username == legacyBootstrapUsername
+}
+
+// reconcileCSR bounds one attempt, including its approval write, without sharing
+// the deadline or cancellation with other requests in the batch.
+func (c *Controller) reconcileCSR(ctx context.Context, csr *certv1.CertificateSigningRequest, claims []karpv1.NodeClaim) error {
+	ctx, cancel := context.WithTimeout(ctx, csrRequestTimeout)
+	defer cancel()
+
+	log.FromContext(ctx).Info("reconciling CSR", "name", csr.Name)
+	subresource, enrolled, err := c.authorizeKubeletClientCSR(ctx, csr, claims)
+	if err != nil {
+		if isRetryable(err) {
+			return fmt.Errorf("authorizing CSR %s: %w", csr.Name, err)
+		}
+		log.FromContext(ctx).V(1).Info("not approving CSR", "name", csr.Name, "username", csr.Spec.Username, "reason", err.Error())
+		return nil
+	}
+
+	log.FromContext(ctx).Info("approving kubelet client CSR", "name", csr.Name, "username", csr.Spec.Username, "subresource", subresource)
+	csr.Status.Conditions = append(csr.Status.Conditions, certv1.CertificateSigningRequestCondition{
+		Type:           certv1.CertificateApproved,
+		Status:         "True",
+		Reason:         autoApproverReason,
+		Message:        "Automatically approved by Karpenter CSR controller",
+		LastUpdateTime: metav1.Now(),
+	})
+	if _, err := c.kubeClient.CertificatesV1().CertificateSigningRequests().UpdateApproval(ctx, csr.Name, csr, metav1.UpdateOptions{}); err != nil {
+		// Re-list after a conflict or uncertain response, including a timeout
+		// after the API server may already have committed the approval.
+		return fmt.Errorf("approving CSR %s: %w", csr.Name, err)
+	}
+	if enrolled != nil {
+		c.recordEnrollment(ctx, enrolled)
+	}
+	return nil
 }
 
 // recordEnrollment writes the kubelet-enrolled-at annotation on a NodeClaim whose
@@ -260,7 +297,7 @@ func approvedByController(csr *certv1.CertificateSigningRequest) bool {
 // approvedEnrollment returns the NodeClaim a bootstrap request enrolls when it is
 // still in its initial-enrollment lifecycle, or nil.
 func approvedEnrollment(csr *certv1.CertificateSigningRequest, nodeClaims []karpv1.NodeClaim) *karpv1.NodeClaim {
-	if csr.Spec.Username != nodePoolBootstrapUsername && csr.Spec.Username != tpmBootstrapUsername && csr.Spec.Username != legacyBootstrapUsername {
+	if !isBootstrapRequester(csr.Spec.Username) {
 		return nil
 	}
 	subject, _, _, err := validateKubeletClientRequest(csr)
@@ -319,6 +356,12 @@ func (c *Controller) authorizeKubeletClientCSR(ctx context.Context, csr *certv1.
 		return selfNodeClientSubresource, nil, nil
 	}
 
+	return c.authorizeBootstrap(ctx, csr, request, subject, nodeClaims)
+}
+
+// authorizeBootstrap authorizes a bootstrap-authenticated request and returns the
+// NodeClaim it enrolls when this is that claim's initial enrollment.
+func (c *Controller) authorizeBootstrap(ctx context.Context, csr *certv1.CertificateSigningRequest, request *x509.CertificateRequest, subject kubeletClientSubject, nodeClaims []karpv1.NodeClaim) (string, *karpv1.NodeClaim, error) {
 	if csr.Spec.Username == legacyBootstrapUsername {
 		nodeClaim, err := c.authorizeLegacyBootstrap(ctx, csr, request, subject, nodeClaims)
 		if err != nil {

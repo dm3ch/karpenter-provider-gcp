@@ -16,13 +16,13 @@ Three paths exist, and all require a successful `SubjectAccessReview` (SAR) for 
 
 ### Attested bootstrap verification
 
-Both bootstrap usernames always require a valid proof. A missing or invalid proof is never approved through an un-attested fallback; the request simply stays pending. The four proof blocks are required; the native producer's optional `ATTESTATION CERTIFICATE` is accepted but never used as a trust anchor. The attestation key always comes from Compute, not the request.
+Both bootstrap usernames always require a valid proof. A missing or invalid proof is never approved through an un-attested fallback; the request simply stays pending. The four proof blocks are required; the native producer's optional `ATTESTATION CERTIFICATE` is accepted but never used as a trust anchor. The envelope must contain each required block exactly once and at most one `ATTESTATION CERTIFICATE`, with no PEM headers, unsupported or malformed blocks, or surrounding non-whitespace data. The attestation key always comes from Compute, not the request.
 
 1. The controller resolves the managed NodeClaim by the requested node name and requires its recorded numeric VM instance ID (annotation `karpenter.k8s.gcp/instance-numeric-id`, written by this provider at launch or adoption).
 2. A requested `gke:instance:<project-number>:<zone>:<instance-id>` organization must match the verified project number, zone and numeric instance ID in full. Bootstrap credentials are not authenticated into that instance group, so approving a partially matching organization would mint another VM's authenticated group; an incomplete organization is rejected.
 3. The `VM IDENTITY` block must name that NodeClaim's project, zone and VM name and report the same numeric instance ID. The proof controls no lookup target: project, zone and name always come from the NodeClaim and the configured provider settings.
 4. The controller reads the live VM fresh from the Compute API (not the name-keyed cache), addresses the vTPM attestation-key read by that numeric incarnation, and repeats the VM read afterwards, rejecting a VM replaced during the lookup. The live numeric instance ID, the configured project's authoritative numeric ID and the attestation key must agree with the proof.
-5. The `ATTESTATION SIGNATURE` must verify with that key over `ATTESTATION DATA`, the data must decode to a TPM certify structure with no non-canonical or trailing bytes, and the certified TPM object must match the CSR public key.
+5. The `ATTESTATION SIGNATURE` must verify with that key over `ATTESTATION DATA`, the data must decode to a TPM certify structure with no non-canonical or trailing bytes, and the certified TPM object must match the CSR public key. Reconstruction uses GKE's imported-key template and minimally encoded coordinates; a generic endorsement-key template or padded coordinates can produce a different certified Name.
 6. The NodeClaim lifecycle must allow the request: either initial enrollment (`Launched=True`, not registered, not deleting) or re-enrollment of the same live registered claim, which includes reissuance while it drains.
 
 ### Legacy un-attested bootstrap
@@ -42,7 +42,7 @@ The setting is read from the GKE API with an uncached request after the checks a
 
 **This path is weaker than attested bootstrap.** The VM association is not a cryptographic proof that the requester is that VM. The legacy credential is shared by the cluster's bootstrapping nodes, so a holder can request a certificate for another eligible pending NodeClaim. It is the consequence of an operator disabling Shielded GKE Nodes, not an equivalent to TPM attestation. Keep Shielded GKE Nodes enabled to require mandatory proof.
 
-The behavior follows a native enrollment observed on GKE 1.36.4-gke.2046003 (COS, one architecture) with Shielded GKE Nodes disabled: requester `kubelet`, signer `kubernetes.io/kube-apiserver-client-kubelet`, `digital signature` and `client auth`, one `system:nodes` organization, ECDSA P-256, no SANs, one plain PEM block. That is one profile, not a guarantee for every version, image or architecture. The SAR for this requester and the candidate controller's own legacy approval have not been validated against real GKE.
+The [native evidence in Proposal 0012](../../proposals/0012-gce-instance-bound-csr-approval.md#legacy-un-attested-bootstrap) covers one COS/GKE enrollment profile, not every version, image or architecture. The SAR for this requester and the candidate controller's own legacy approval have not been validated against real GKE.
 
 ### Re-enrollment and rotation
 
@@ -64,7 +64,7 @@ Trusted controller configuration, privileged NodeClaim/annotation/status writers
 
 The legacy path has no such binding at all: it relies on the checks above and on the operator's disabled Shielded GKE Nodes setting.
 
-Other approvers operate independently. These controller checks are not a claim about every cluster approval path, and a competing terminal denial is not overwritten.
+Each candidate CSR has a 30-second context deadline covering authorization and the approval write. Temporary Compute, SAR or policy-read failures leave the request pending for retry; the next request gets a fresh context. Requests are processed sequentially, so a slow batch can still take roughly 30 seconds per candidate. An approval may already have committed when its response times out; terminal conditions, uncertain responses and conflicts are handled idempotently by re-listing. Other approvers operate independently: these checks are not a claim about every cluster approval path, and a competing terminal denial is not overwritten.
 
 ## Enrollment record
 
@@ -80,7 +80,7 @@ Run the focused offline authorization tests:
 go test -race ./pkg/controllers/csr
 ```
 
-They generate TPM attestation proofs and legacy requests locally and cover approval decisions, the SAR query, the legacy request shape, lifecycle, live incarnation, per-attempt policy reads, the approval API write and request independence using local HTTP doubles. `go test ./pkg/providers/gke ./pkg/providers/instance` covers the uncached policy read and the fresh incarnation lookup. `go test -race ./pkg/cloudprovider` also covers incarnation-upgrade drift eligibility and precedence over existing class/image drift. These tests do not exercise real API admission, CA signing, GKE joining/rotation or rolling replacement. [Proposal 0012](../../proposals/0012-gce-instance-bound-csr-approval.md) records the supported matrix and the pending real-GKE reissuance/drain validation.
+Fixed public-area/Name vectors protect the private GKE template adapter, including leading-zero coordinates on every accepted curve. A complete synthetic attestation fixture assembled independently of the production converter tests approval and different-CSR-key rejection; no private keys or real environment material are stored. The CSR tests generate proofs and legacy requests locally and cover approval decisions, the SAR query, the legacy request shape, lifecycle, live incarnation, per-attempt policy reads, the approval API write and request independence using local HTTP doubles. `go test ./pkg/providers/gke ./pkg/providers/instance` covers the uncached policy read, the fresh incarnation lookup, and that Create/owned adoption—not `Get`/`List` inventory—records the trusted incarnation. `go test -race ./pkg/cloudprovider` also covers incarnation-upgrade drift eligibility and precedence over existing class/image drift. These tests do not exercise real API admission, CA signing, GKE joining/rotation or rolling replacement. [Proposal 0012](../../proposals/0012-gce-instance-bound-csr-approval.md) records the supported matrix and the pending real-GKE reissuance/drain validation.
 
 ## Chart certificate permissions
 

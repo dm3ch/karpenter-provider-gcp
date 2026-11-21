@@ -598,6 +598,39 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+func TestInventoryDoesNotRecordLaunchIncarnation(t *testing.T) {
+	t.Parallel()
+	provider := newFakeComputeProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/projects/test-project/regions/us-central1":
+			writeJSON(w, &compute.Region{Zones: []string{"zones/us-central1-a"}})
+		case "/projects/test-project/zones/us-central1-a/instances":
+			writeJSON(w, &compute.InstanceList{Items: []*compute.Instance{{
+				Name: "legacy-node", Id: 987654321, MachineType: "machineTypes/e2-standard-2", Status: "RUNNING",
+				Labels: map[string]string{
+					utils.SanitizeGCELabelValue(utils.LabelNodePoolKey):     "test-pool",
+					utils.SanitizeGCELabelValue(utils.LabelGCENodeClassKey): "test-class",
+					utils.SanitizeGCELabelValue(utils.LabelClusterNameKey):  "test-cluster",
+				},
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	provider.clusterName = "test-cluster"
+
+	instances, err := provider.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, instances, 1, "legacy VMs must remain visible for cleanup")
+	require.Equal(t, "legacy-node", instances[0].Name)
+	require.Zero(t, instances[0].NumericID, "inventory cannot establish NodeClaim ownership")
+	provider.instanceCache.Flush()
+	found, err := provider.Get(context.Background(), "gce://test-project/us-central1-a/legacy-node")
+	require.NoError(t, err)
+	require.Equal(t, "legacy-node", found.Name)
+	require.Zero(t, found.NumericID, "Get must not turn an inventory ID into a trusted launch record")
+}
+
 func metadataValue(meta *compute.Metadata, key string) string {
 	for _, item := range meta.Items {
 		if item.Key == key {

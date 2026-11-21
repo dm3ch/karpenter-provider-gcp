@@ -19,10 +19,12 @@ package csr
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -120,6 +122,97 @@ func TestReconcileContinuesAfterTemporaryIdentityFailure(t *testing.T) {
 	approvals := double.recordedApprovals()
 	require.Len(t, approvals, 1, "the unrelated request must still be approved")
 	require.Equal(t, "csr-renewal", approvals[0].Name)
+}
+
+func TestReconcileSkipsUnrelatedBatchBeforeReadingClaims(t *testing.T) {
+	decided := kubeletCSR([]byte("unused"), bootstrapUser)
+	decided.Status.Certificate = []byte("already issued")
+	otherSigner := kubeletCSR([]byte("unused"), bootstrapUser)
+	otherSigner.Spec.SignerName = certv1.KubeletServingSignerName
+	unknownUser := kubeletCSR([]byte("unused"), "unrelated-requester")
+	api, double := newKubeAPIDouble(t)
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+		t.Fatal("irrelevant requests must not read VM identity")
+		return nil, nil
+	}))
+	controller.client = &csrReadClient{
+		requests:   []*certv1.CertificateSigningRequest{decided, otherSigner, unknownUser},
+		claimError: errors.New("NodeClaims must not be read for this batch"),
+	}
+	_, err := controller.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, double.recordedReviews())
+	require.Empty(t, double.recordedApprovals())
+}
+
+func TestReconcileBoundsEachRequestIndependently(t *testing.T) {
+	fixture := newAttestationFixture(t)
+	first := bootstrapCSR(encodePEMBlocks(fixture.blocks(t)))
+	second := first.DeepCopy()
+	second.Name = "csr-next"
+	api, double := newKubeAPIDouble(t)
+	double.sarAllowed = true
+	var firstContext context.Context
+	controller := newTestController(t, api, identityProviderFunc(func(ctx context.Context, _, _ string) (*instance.InstanceIdentity, error) {
+		deadline, ok := ctx.Deadline()
+		require.True(t, ok, "each authorization attempt needs an end-to-end deadline")
+		require.LessOrEqual(t, time.Until(deadline), 30*time.Second)
+		require.NoError(t, ctx.Err())
+		if firstContext == nil {
+			firstContext = ctx
+			return nil, context.DeadlineExceeded
+		}
+		require.ErrorIs(t, firstContext.Err(), context.Canceled, "release the first request's scope before the next")
+		return fixtureIdentity(t, fixture), nil
+	}))
+	controller.client = &csrReadClient{requests: []*certv1.CertificateSigningRequest{first, second}, claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
+	_, err := controller.Reconcile(context.Background())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	approvals := double.recordedApprovals()
+	require.Len(t, approvals, 1)
+	require.Equal(t, second.Name, approvals[0].Name)
+	require.Len(t, double.recordedReviews(), 1, "a timed-out authorization must not reach SAR or approval")
+}
+
+func TestReconcileIndependentAttestationFixture(t *testing.T) {
+	// Public synthetic fixture, independently assembled with stdlib signatures and
+	// manually encoded TPM structures; no production converter or private keys.
+	data, err := os.ReadFile("testdata/gke-attestation.json")
+	require.NoError(t, err)
+	var fixture struct {
+		Request        string `json:"request"`
+		AttestationKey string `json:"attestationKey"`
+	}
+	require.NoError(t, json.Unmarshal(data, &fixture))
+	for _, tt := range []struct {
+		name         string
+		differentKey bool
+	}{{name: "valid"}, {name: "different CSR key", differentKey: true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := []byte(fixture.Request)
+			if tt.differentKey {
+				block, rest := pem.Decode(request)
+				require.NotNil(t, block)
+				request = append(nodeRequest(t, attestationVM.Name), rest...)
+			}
+			api, double := newKubeAPIDouble(t)
+			double.sarAllowed = true
+			controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+				return &instance.InstanceIdentity{ProjectID: attestationVM.ProjectName, ProjectNumber: attestationVM.ProjectID,
+					Zone: attestationVM.Zone, Name: attestationVM.Name, NumericID: attestationVM.ID, AttestationKeyPEM: fixture.AttestationKey}, nil
+			}))
+			controller.client = &csrReadClient{request: bootstrapCSR(request), claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
+			_, err := controller.Reconcile(context.Background())
+			require.NoError(t, err)
+			if tt.differentKey {
+				require.Empty(t, double.recordedApprovals())
+				require.Empty(t, double.recordedReviews())
+			} else {
+				require.Len(t, double.recordedApprovals(), 1)
+				require.Len(t, double.recordedReviews(), 1)
+			}
+		})
+	}
 }
 
 func TestReconcileReportsApprovalConflict(t *testing.T) {

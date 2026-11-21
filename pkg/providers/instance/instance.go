@@ -150,8 +150,8 @@ func NewProvider(clusterName, clusterLocation, region, projectID, defaultService
 }
 
 // waitOperationDone polls a zone operation to completion and returns the terminal
-// operation, which is the only source of the created resource's numeric ID when
-// the insert response omits it.
+// operation so its numeric resource ID can be used before falling back to the
+// insert response or an ownership-checked instance read.
 func (p *DefaultProvider) waitOperationDone(ctx context.Context, zone, operationName string) (*compute.Operation, error) {
 	waitCtx := ctx
 	cancel := func() {}
@@ -2068,7 +2068,6 @@ func (p *DefaultProvider) syncInstances(ctx context.Context) error {
 				instance := &Instance{
 					InstanceID:   inst.Name,
 					Name:         inst.Name,
-					NumericID:    inst.Id,
 					Type:         inst.MachineType[strings.LastIndex(inst.MachineType, "/")+1:], // just for matching "e2-standard-2"
 					Location:     zone,
 					ProjectID:    p.projectID,
