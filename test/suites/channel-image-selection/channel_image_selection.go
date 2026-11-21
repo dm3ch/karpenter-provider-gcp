@@ -63,6 +63,12 @@ var _ = DescribeTable("ChannelImageSelection", Label("suite:channel-image-select
 	Entry("Ubuntu osVersion default / version: latest / amd64 / on-demand",
 		familyChannelTestCase{family: gcpv1alpha1.ImageFamilyUbuntu, osVersion: gcpv1alpha1.ImageOSVersionDefault, version: "latest"},
 		SpecTimeout(15*time.Minute)),
+	// osVersion 26.04 skips itself when GKE publishes no clean 26.04 image for the cluster's
+	// minor (it does not for 1.36, which this suite runs on today), so it starts running by
+	// itself once the E2E cluster is on a minor that has 26.04 images (1.37 and later).
+	Entry("Ubuntu osVersion 26.04 / version: latest / amd64 / on-demand",
+		familyChannelTestCase{family: gcpv1alpha1.ImageFamilyUbuntu, osVersion: "26.04", version: "latest"},
+		SpecTimeout(15*time.Minute)),
 	// The deprecated per-release family must keep resolving to the same image.
 	Entry("Ubuntu2404 (deprecated) / version: latest / amd64 / on-demand",
 		familyChannelTestCase{family: gcpv1alpha1.ImageFamilyUbuntu2404, version: "latest"},
@@ -75,6 +81,9 @@ func runChannelImageSelectionTest(ctx context.Context, tc familyChannelTestCase)
 		env.SkipIfChannelLacksClusterMinor(ctx, tc.channel)
 	}
 
+	if tc.osVersion == "26.04" && env.ResolveUbuntuVersion(ctx, "2604") == "" {
+		Skip("GKE publishes no clean Ubuntu 26.04 image for this cluster's Kubernetes minor")
+	}
 	prefix := environment.TestPrefix(karpv1.ArchitectureAmd64, karpv1.CapacityTypeOnDemand, "channel-img")
 	suffix := environment.UniqueSuffix()
 	name := prefix + "-" + suffix
@@ -116,25 +125,7 @@ func runChannelImageSelectionTest(ctx context.Context, tc familyChannelTestCase)
 		"no images in status.images after NodeClass became Ready (family=%s channel=%s version=%s)",
 		tc.family, tc.channel, tc.version)
 
-	switch {
-	case tc.channel != "" && tc.family == gcpv1alpha1.ImageFamilyContainerOptimizedOS:
-		// For channel-based COS selection, verify the resolved image's embedded GKE build
-		// matches what ResolveVersionForChannel returns for the given channel.
-		expectedGKEVersion := env.GetChannelVersion(ctx, tc.channel)
-		k8sKey, build, ok := imagefamily.ParseGKEVersion(expectedGKEVersion)
-		Expect(ok).To(BeTrue(), "could not parse GKE version %q returned by server config", expectedGKEVersion)
-		expectedSubstr := fmt.Sprintf("gke-%s-gke%s-", k8sKey, build)
-		Expect(sourceImages[0]).To(ContainSubstring(expectedSubstr),
-			"resolved COS image does not match channel %s version %s (expected pattern %s in %s)",
-			tc.channel, expectedGKEVersion, expectedSubstr, sourceImages[0])
-	case tc.version == "latest" && (tc.family == gcpv1alpha1.ImageFamilyUbuntu2404 || tc.osVersion == "24.04" || tc.osVersion == gcpv1alpha1.ImageOSVersionDefault):
-		// For version: latest, the resolved image must embed the independently-queried Ubuntu 24.04 version.
-		expectedVer := env.ResolveCurrentUbuntuVersion(ctx)
-		Expect(sourceImages[0]).To(ContainSubstring("ubuntu-gke-2404-"),
-			"resolved image is not an Ubuntu 24.04 image: %s", sourceImages[0])
-		Expect(sourceImages[0]).To(ContainSubstring(expectedVer),
-			"resolved Ubuntu 24.04 image does not contain expected version %s", expectedVer)
-	}
+	expectResolvedImage(ctx, tc, sourceImages)
 
 	env.CreateNodePool(ctx, name, name, environment.TestCase{
 		CapacityType:  karpv1.CapacityTypeOnDemand,
@@ -159,4 +150,34 @@ func runChannelImageSelectionTest(ctx context.Context, tc familyChannelTestCase)
 	Expect(node.Labels[karpv1.CapacityTypeLabelKey]).To(Equal(karpv1.CapacityTypeOnDemand))
 	Expect(strings.TrimPrefix(node.Status.NodeInfo.KubeletVersion, "v")).To(Equal(expectedRelease),
 		"running kubelet must match the selected image release, not the bootstrap source pool")
+}
+
+// expectResolvedImage verifies the resolved image is consistent with the requested selector.
+func expectResolvedImage(ctx context.Context, tc familyChannelTestCase, sourceImages []string) {
+	switch {
+	case tc.channel != "" && tc.family == gcpv1alpha1.ImageFamilyContainerOptimizedOS:
+		// For channel-based COS selection, verify the resolved image's embedded GKE build
+		// matches what ResolveVersionForChannel returns for the given channel.
+		expectedGKEVersion := env.GetChannelVersion(ctx, tc.channel)
+		k8sKey, build, ok := imagefamily.ParseGKEVersion(expectedGKEVersion)
+		Expect(ok).To(BeTrue(), "could not parse GKE version %q returned by server config", expectedGKEVersion)
+		expectedSubstr := fmt.Sprintf("gke-%s-gke%s-", k8sKey, build)
+		Expect(sourceImages[0]).To(ContainSubstring(expectedSubstr),
+			"resolved COS image does not match channel %s version %s (expected pattern %s in %s)",
+			tc.channel, expectedGKEVersion, expectedSubstr, sourceImages[0])
+	case tc.version == "latest" && tc.osVersion == "26.04":
+		// A fixed 26.04 selection must resolve the newest clean 26.04 image for the cluster's minor.
+		expectedVer := env.ResolveUbuntuVersion(ctx, "2604")
+		Expect(sourceImages[0]).To(ContainSubstring("ubuntu-gke-2604-"),
+			"resolved image is not an Ubuntu 26.04 image: %s", sourceImages[0])
+		Expect(sourceImages[0]).To(ContainSubstring(expectedVer),
+			"resolved Ubuntu 26.04 image does not contain expected version %s", expectedVer)
+	case tc.version == "latest" && (tc.family == gcpv1alpha1.ImageFamilyUbuntu2404 || tc.osVersion == "24.04" || tc.osVersion == gcpv1alpha1.ImageOSVersionDefault):
+		// For version: latest, the resolved image must embed the independently-queried Ubuntu 24.04 version.
+		expectedVer := env.ResolveCurrentUbuntuVersion(ctx)
+		Expect(sourceImages[0]).To(ContainSubstring("ubuntu-gke-2404-"),
+			"resolved image is not an Ubuntu 24.04 image: %s", sourceImages[0])
+		Expect(sourceImages[0]).To(ContainSubstring(expectedVer),
+			"resolved Ubuntu 24.04 image does not contain expected version %s", expectedVer)
+	}
 }

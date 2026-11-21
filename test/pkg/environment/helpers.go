@@ -1701,10 +1701,19 @@ func ubuntuImageProjectForMinor(minor int) string {
 	return "ubuntu-os-gke-cloud"
 }
 
-// ResolveCurrentUbuntuVersion queries the Ubuntu image project that serves the cluster's K8s minor
-// for the most recent non-deprecated amd64 Ubuntu 24.04 GKE image matching that minor and returns
-// the version token (e.g. "v20260416").
+// ResolveCurrentUbuntuVersion returns the version token (e.g. "v20260416") of the newest clean
+// amd64 Ubuntu 24.04 GKE image for the cluster's K8s minor. It fails the test if there is none.
 func (e *Environment) ResolveCurrentUbuntuVersion(ctx context.Context) string {
+	version := e.ResolveUbuntuVersion(ctx, "2404")
+	Expect(version).NotTo(BeEmpty(), "no Ubuntu 24.04 image found for the cluster's K8s minor")
+	return version
+}
+
+// ResolveUbuntuVersion queries the Ubuntu image project that serves the cluster's K8s minor for the
+// most recent non-deprecated clean amd64 GKE image of the given release token ("2204", "2404",
+// "2604") for that minor and returns its version token (e.g. "v20260416"). It returns "" when GKE
+// publishes no such image for the minor, so callers can skip releases the cluster cannot run.
+func (e *Environment) ResolveUbuntuVersion(ctx context.Context, release string) string {
 	serverVer, err := e.KubeClient.Discovery().ServerVersion()
 	Expect(err).NotTo(HaveOccurred(), "getting server version")
 
@@ -1719,19 +1728,19 @@ func (e *Environment) ResolveCurrentUbuntuVersion(ctx context.Context) string {
 
 	project := ubuntuImageProjectForMinor(minor)
 	// Clean builds only: variants (-tpu, -cgroupsv1, -linux64k, ...) are suffixes after the date.
-	clean := regexp.MustCompile(fmt.Sprintf(`^ubuntu-gke-2404-%s-%s-amd64-v\d{8}[a-z]?$`, parts[0], parts[1]))
+	clean := regexp.MustCompile(fmt.Sprintf(`^ubuntu-gke-%s-%s-%s-amd64-v\d{8}[a-z]?$`, release, parts[0], parts[1]))
 	best, listErr := newestImage(ctx, e.computeSvc, project, func(img *compute.Image) bool {
 		return clean.MatchString(img.Name)
 	})
 	Expect(listErr).NotTo(HaveOccurred(), "listing Ubuntu images in %s", project)
-	Expect(best).NotTo(BeNil(), "no Ubuntu image found in %s for K8s version %s", project, serverVer.GitVersion)
+	if best == nil {
+		return ""
+	}
 
 	versionRe := regexp.MustCompile(`-v(\d{8}[a-z]?)`)
 	m := versionRe.FindStringSubmatch(best.Name)
 	Expect(m).To(HaveLen(2), "could not extract Ubuntu version from %q", best.Name)
-	version := "v" + m[1]
-	Expect(version).NotTo(BeEmpty(), "could not extract Ubuntu version from %q", best.Name)
-	return version
+	return "v" + m[1]
 }
 
 // GetChannelVersion fetches the GKE server config and returns the version string
