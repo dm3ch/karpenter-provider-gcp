@@ -59,6 +59,11 @@ var _ = DescribeTable("ChannelImageSelection", Label("suite:channel-image-select
 )
 
 func runChannelImageSelectionTest(ctx context.Context, tc familyChannelTestCase) {
+	if tc.channel != "" {
+		// A cluster can run a Kubernetes minor that a slower channel has not promoted yet.
+		env.SkipIfChannelLacksClusterMinor(ctx, tc.channel)
+	}
+
 	prefix := environment.TestPrefix(karpv1.ArchitectureAmd64, karpv1.CapacityTypeOnDemand, "channel-img")
 	suffix := environment.UniqueSuffix()
 	name := prefix + "-" + suffix

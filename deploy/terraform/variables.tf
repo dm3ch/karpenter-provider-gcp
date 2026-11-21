@@ -104,6 +104,16 @@ variable "release_channel" {
   }
 }
 
+variable "min_master_version" {
+  type        = string
+  default     = null
+  description = "Minimum Kubernetes control plane version, for example \"1.37\" or \"1.37.1-gke.1552000\". GKE still auto-upgrades within the release channel, which must offer this version or cluster creation/update fails. Null leaves selection to the channel."
+  validation {
+    condition     = var.min_master_version == null ? true : can(regex("^1\\.[0-9]+(\\.[0-9]+(-gke\\.[0-9]+)?)?$", var.min_master_version))
+    error_message = "Use a version such as 1.37, 1.37.1 or 1.37.1-gke.1552000."
+  }
+}
+
 variable "primary_cidr" {
   type    = string
   default = "10.0.0.0/24"

@@ -1728,6 +1728,23 @@ func (e *Environment) ResolveCurrentUbuntuVersion(ctx context.Context) string {
 // (e.g., "1.34.7-gke.1068000"). Fails the test if the channel or version cannot
 // be resolved.
 func (e *Environment) GetChannelVersion(ctx context.Context, channelName string) string {
+	version, err := e.resolveChannelVersion(ctx, channelName)
+	Expect(err).NotTo(HaveOccurred(), "resolving version for channel %s", channelName)
+	return version
+}
+
+// SkipIfChannelLacksClusterMinor skips the running spec when channelName offers no
+// version for the cluster's Kubernetes minor, for example STABLE while the cluster runs
+// a newer minor than STABLE has promoted. Any other resolution failure still fails the
+// spec, so a real server-config or channel-name problem is not hidden by the skip.
+func (e *Environment) SkipIfChannelLacksClusterMinor(ctx context.Context, channelName string) {
+	_, err := e.resolveChannelVersion(ctx, channelName)
+	if errors.Is(err, gke.ErrNoVersionForClusterMinor) {
+		Skip(fmt.Sprintf("release channel %s offers no version for this cluster's Kubernetes minor: %v", channelName, err))
+	}
+}
+
+func (e *Environment) resolveChannelVersion(ctx context.Context, channelName string) (string, error) {
 	sc, err := e.containerSvc.Projects.Locations.
 		GetServerConfig(fmt.Sprintf("projects/%s/locations/%s", e.ProjectID, e.ClusterLocation)).
 		Context(ctx).Do()
@@ -1736,9 +1753,7 @@ func (e *Environment) GetChannelVersion(ctx context.Context, channelName string)
 	serverVer, err := e.KubeClient.Discovery().ServerVersion()
 	Expect(err).NotTo(HaveOccurred(), "getting server version")
 
-	version, err := gke.ResolveVersionForChannel(sc, channelName, serverVer.GitVersion)
-	Expect(err).NotTo(HaveOccurred(), "resolving version for channel %s", channelName)
-	return version
+	return gke.ResolveVersionForChannel(sc, channelName, serverVer.GitVersion)
 }
 
 // deleteIfExists deletes a resource if it exists and waits for it to be fully

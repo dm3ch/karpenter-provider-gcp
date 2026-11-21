@@ -82,11 +82,13 @@ func TestResolveVersionForChannel_NoMinorMatch(t *testing.T) {
 	_, err := ResolveVersionForChannel(sc, "stable", "1.34.7")
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "channel STABLE has no valid version for cluster minor")
+	require.ErrorIs(t, err, ErrNoVersionForClusterMinor)
 }
 
 func TestResolveVersionForChannel_ChannelNotFound(t *testing.T) {
 	sc := makeServerConfig()
 	_, err := ResolveVersionForChannel(sc, "stable", "1.34.7")
+	require.NotErrorIs(t, err, ErrNoVersionForClusterMinor)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "channel STABLE not found in getServerConfig response")
 }

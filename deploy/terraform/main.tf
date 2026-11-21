@@ -58,6 +58,9 @@ resource "google_container_cluster" "default" {
     channel = var.release_channel
   }
 
+  # A floor, not a pin: GKE keeps auto-upgrading within the release channel.
+  min_master_version = var.min_master_version
+
   # GKE bills Cloud Logging and Cloud Monitoring ingestion, and the managed
   # Prometheus stack runs its own operator, alertmanager and rule-evaluator.
   # Both are opt-in: installations replace them with their own stack or accept

@@ -111,6 +111,12 @@ variable "release_channel" {
   }
 }
 
+variable "min_master_version" {
+  type        = string
+  default     = null
+  description = "Minimum Kubernetes control plane version for the e2e cluster, for example \"1.37\". The release channel must offer it."
+}
+
 variable "additional_pod_ranges" {
   type        = map(string)
   default     = {}

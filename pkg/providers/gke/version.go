@@ -17,6 +17,7 @@ limitations under the License.
 package gke
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -24,6 +25,23 @@ import (
 	containerv1 "google.golang.org/api/container/v1"
 	k8sversion "k8s.io/apimachinery/pkg/util/version"
 )
+
+// ErrNoVersionForClusterMinor is matched with errors.Is on the error returned by
+// ResolveVersionForChannel when the channel exists but offers no version for the cluster's Kubernetes minor. Callers that
+// can tolerate the gap, such as end-to-end specs, check for it.
+var ErrNoVersionForClusterMinor = errors.New("channel has no valid version for cluster minor")
+
+type noVersionForClusterMinorError struct{ channel, minor string }
+
+func (e *noVersionForClusterMinorError) Error() string {
+	return fmt.Sprintf("channel %s has no valid version for cluster minor %s; "+
+		"the requested channel may not yet support this Kubernetes minor — "+
+		"switch to a channel that does, or use version: latest explicitly", e.channel, e.minor)
+}
+
+func (e *noVersionForClusterMinorError) Is(target error) bool {
+	return target == ErrNoVersionForClusterMinor
+}
 
 // ResolveVersionForChannel returns the GKE version string for channelName that matches
 // the minor version of clusterVersion. channelName is normalised to uppercase.
@@ -58,9 +76,7 @@ func ResolveVersionForChannel(sc *containerv1.ServerConfig, channelName, cluster
 		return v, nil
 	}
 
-	return "", fmt.Errorf("channel %s has no valid version for cluster minor %s; "+
-		"the requested channel may not yet support this Kubernetes minor — "+
-		"switch to a channel that does, or use version: latest explicitly", channelName, clusterMinor)
+	return "", &noVersionForClusterMinorError{channel: channelName, minor: clusterMinor}
 }
 
 func findChannelConfig(sc *containerv1.ServerConfig, channelName string) *containerv1.ReleaseChannelConfig {
