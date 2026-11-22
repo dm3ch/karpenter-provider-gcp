@@ -39,11 +39,11 @@ import (
 
 // attestationVM is the VM identity a valid local attestation fixture claims.
 var attestationVM = vmIdentity{
-	Zone:        "us-central1-a",
-	ID:          987654321,
-	Name:        "karpenter-default-abc",
-	ProjectID:   123456789,
-	ProjectName: "my-project",
+	Zone:          "us-central1-a",
+	ID:            987654321,
+	Name:          "karpenter-default-abc",
+	ProjectNumber: 123456789,
+	ProjectID:     "my-project",
 }
 
 // pemBlock is one block of a CSR attestation envelope.

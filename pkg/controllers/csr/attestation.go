@@ -47,11 +47,13 @@ const (
 // vmIdentity is the untrusted VM IDENTITY payload of an attestation envelope.
 // Every field is compared with authoritative Compute Engine data before use.
 type vmIdentity struct {
-	Zone        string `json:"zone"`
-	ID          uint64 `json:"id"`
-	Name        string `json:"name"`
-	ProjectID   uint64 `json:"project_id"`
-	ProjectName string `json:"project_name"`
+	Zone string `json:"zone"`
+	ID   uint64 `json:"id"`
+	Name string `json:"name"`
+	// GKE names these confusingly: project_id is the numeric project number and
+	// project_name is the string project ID.
+	ProjectNumber uint64 `json:"project_id"`
+	ProjectID     string `json:"project_name"`
 }
 
 // attestationProof is the parsed, not yet verified, TPM attestation envelope of
@@ -83,7 +85,7 @@ func parseAttestationEnvelope(request []byte, csr *x509.CertificateRequest) (att
 	if err := json.Unmarshal(blocks[vmIdentityBlock], &proof.vm); err != nil {
 		return attestationProof{}, fmt.Errorf("parsing VM IDENTITY block: %w", err)
 	}
-	if proof.vm.ProjectID == 0 || proof.vm.ID == 0 || proof.vm.ProjectName == "" || proof.vm.Zone == "" || proof.vm.Name == "" {
+	if proof.vm.ProjectNumber == 0 || proof.vm.ID == 0 || proof.vm.ProjectID == "" || proof.vm.Zone == "" || proof.vm.Name == "" {
 		return attestationProof{}, fmt.Errorf("VM IDENTITY block is missing required identity fields")
 	}
 	return proof, nil

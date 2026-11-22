@@ -144,8 +144,8 @@ func newTestController(t *testing.T, api kubernetes.Interface, identity Identity
 func fixtureIdentity(t *testing.T, fixture *attestationFixture) *instance.InstanceIdentity {
 	t.Helper()
 	return &instance.InstanceIdentity{
-		ProjectID:         fixture.vm.ProjectName,
-		ProjectNumber:     fixture.vm.ProjectID,
+		ProjectID:         fixture.vm.ProjectID,
+		ProjectNumber:     fixture.vm.ProjectNumber,
 		Zone:              fixture.vm.Zone,
 		Name:              fixture.vm.Name,
 		NumericID:         fixture.vm.ID,
@@ -274,8 +274,8 @@ func TestAuthorizeKubeletClientCSR(t *testing.T) {
 		{
 			name: "attestation proof for another project",
 			csr: func(t *testing.T, fixture *attestationFixture) *certv1.CertificateSigningRequest {
-				fixture.vm.ProjectID++
-				fixture.vm.ProjectName = "another-project"
+				fixture.vm.ProjectNumber++
+				fixture.vm.ProjectID = "another-project"
 				return bootstrapCSR(encodePEMBlocks(fixture.blocks(t)))
 			},
 			claims: func(t *testing.T, fixture *attestationFixture) []karpv1.NodeClaim {
@@ -805,7 +805,7 @@ func TestParseProviderID(t *testing.T) {
 func TestParseInstanceOrg(t *testing.T) {
 	projectNumber, zone, numericID, err := parseInstanceOrg(instanceOrg)
 	require.NoError(t, err)
-	require.Equal(t, attestationVM.ProjectID, projectNumber)
+	require.Equal(t, attestationVM.ProjectNumber, projectNumber)
 	require.Equal(t, attestationVM.Zone, zone)
 	require.Equal(t, attestationVM.ID, numericID)
 

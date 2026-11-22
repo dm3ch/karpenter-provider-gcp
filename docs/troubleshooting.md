@@ -183,7 +183,7 @@ kubectl get csr
 Pending CSRs for Karpenter nodes should be approved automatically. If they are stuck in `Pending`, check the Karpenter controller logs for CSR-related errors (the reason a CSR was not approved is logged at debug level) and verify:
 
 - the controller has the `certificates.k8s.io` RBAC permission to approve CSRs and the `authorization.k8s.io` permission to create `subjectaccessreviews`;
-- the controller's GCP service account can read the VM attestation key (`compute.instances.getShieldedInstanceIdentity`) and the project (`compute.projects.get`);
+- the controller's GCP service account can read the VM attestation key (`compute.instances.getShieldedInstanceIdentity`), and the controller pod runs in the configured project (its metadata server supplies the project number; a `VM IDENTITY project does not match` debug reason points here);
 - the NodeClaim has the `karpenter.k8s.gcp/instance-numeric-id` annotation. Claims created before this release have none, so they cannot use attested enrollment; replace them (see [MIGRATION.md](../MIGRATION.md)). A VM created before this release is also no longer adopted by a new NodeClaim: its create reports `InstanceIncarnationUnknown` until the stale VM is deleted;
 - for a TPM-attested node, its vTPM is enabled and its Compute instance was not replaced after the claim was launched;
 - for a `kubelet` (legacy) request, the cluster really has Shielded GKE Nodes disabled and the controller can read the cluster (`container.clusters.get`). An enabled, absent or unreadable setting leaves the request pending, and the debug log names the reason. Re-check after changing the cluster setting: the controller reads it again on every attempt.

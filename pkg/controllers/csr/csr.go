@@ -607,10 +607,10 @@ func validateInstanceOrganization(subject kubeletClientSubject, projectNumber ui
 // VM incarnation. The expected values never come from the proof itself.
 func validateProofIdentity(proof attestationProof, project, zone, instanceName string, recordedID uint64) error {
 	if proof.vm.Name != instanceName || proof.vm.Zone != zone {
-		return fmt.Errorf("VM IDENTITY %s/%s does not match the requested instance %s/%s", proof.vm.ProjectName, proof.vm.Zone, project, zone)
+		return fmt.Errorf("VM IDENTITY %s/%s does not match the requested instance %s/%s", proof.vm.ProjectID, proof.vm.Zone, project, zone)
 	}
-	if proof.vm.ProjectName != project {
-		return fmt.Errorf("VM IDENTITY project %q does not match the configured project %q", proof.vm.ProjectName, project)
+	if proof.vm.ProjectID != project {
+		return fmt.Errorf("VM IDENTITY project %q does not match the configured project %q", proof.vm.ProjectID, project)
 	}
 	if proof.vm.ID != recordedID {
 		return fmt.Errorf("VM IDENTITY instance %d does not match the recorded launch instance %d of NodeClaim %q", proof.vm.ID, recordedID, instanceName)
@@ -629,7 +629,7 @@ func (c *Controller) lookupAttestationIdentity(ctx context.Context, nodeClaim *k
 	if identity == nil {
 		return nil, fmt.Errorf("instance %q for NodeClaim %q does not exist", instanceName, nodeClaim.Name)
 	}
-	if identity.ProjectID != proof.vm.ProjectName || identity.ProjectNumber != proof.vm.ProjectID {
+	if identity.ProjectID != proof.vm.ProjectID || identity.ProjectNumber != proof.vm.ProjectNumber {
 		return nil, fmt.Errorf("VM IDENTITY project does not match the configured cluster project")
 	}
 	if identity.NumericID != recordedID || identity.Zone != zone || identity.Name != instanceName {

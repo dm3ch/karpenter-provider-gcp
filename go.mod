@@ -4,6 +4,7 @@ go 1.27.4
 
 require (
 	cloud.google.com/go/compute v1.75.0
+	cloud.google.com/go/compute/metadata v0.10.0
 	github.com/awslabs/operatorpkg v0.0.0-20261002163259-5e8ed3699dea
 	github.com/google/go-tpm v0.9.8
 	github.com/googleapis/gax-go/v2 v2.27.0
@@ -40,7 +41,6 @@ require (
 	cel.dev/expr v0.25.3 // indirect
 	cloud.google.com/go/auth v0.24.1-0.20261001053825-dbc26066f70a // indirect
 	cloud.google.com/go/auth/oauth2adapt v0.3.1 // indirect
-	cloud.google.com/go/compute/metadata v0.10.0 // indirect
 	github.com/Masterminds/semver/v3 v3.4.0 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect

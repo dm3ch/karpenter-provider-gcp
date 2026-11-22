@@ -60,6 +60,7 @@ The `kubelet-nodepool-bootstrap` and `kubelet-bootstrap` identities must now pre
 **Before upgrading:**
 
 - Update the controller's custom role from [`deploy/iam/karpenter-controller-role.yaml`](deploy/iam/karpenter-controller-role.yaml) (`gcloud iam roles update`) so it has `compute.instances.getShieldedInstanceIdentity`. The chart adds `create` on `subjectaccessreviews` automatically.
+- Run the controller in the cluster's own project (it reads the project number from its node's metadata server).
 - Keep the vTPM enabled on nodes (Compute Engine's default; `enableVtpm: false` cannot enroll).
 - To pilot first, add a NodePool budget with `nodes: "0"` and `reasons: [Drifted]` **before** upgrading; see below.
 

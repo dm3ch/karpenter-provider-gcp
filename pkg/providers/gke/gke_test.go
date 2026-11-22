@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -216,46 +217,53 @@ func TestGetClusterConfig_CacheHit(t *testing.T) {
 	require.Equal(t, int32(1), calls.Load(), "expected no additional API calls on cache hit")
 }
 
+// TestProjectNumber covers the real mismatch found on GKE: the Compute Project
+// resource's id is not the project number. The number must come from the metadata
+// server of a controller running in the configured project.
 func TestProjectNumber(t *testing.T) {
-	t.Parallel()
-
+	// t.Setenv points the process-wide metadata client at the fake, so this test
+	// and its subtests cannot run in parallel.
 	var calls atomic.Int32
-	numericID := uint64(123456789)
+	hostProject, number := "p", "123456789"
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/projects/p" {
+		w.Header().Set("Metadata-Flavor", "Google")
+		switch r.URL.Path {
+		case "/computeMetadata/v1/project/project-id":
+			calls.Add(1)
+			_, _ = w.Write([]byte(hostProject))
+		case "/computeMetadata/v1/project/numeric-project-id":
+			_, _ = w.Write([]byte(number))
+		default:
 			http.NotFound(w, r)
-			return
 		}
-		calls.Add(1)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(&computev1.Project{Name: "p", Id: numericID})
 	}))
 	defer srv.Close()
-
-	svc, err := computev1.NewService(context.Background(),
-		googleapioption.WithoutAuthentication(),
-		googleapioption.WithEndpoint(srv.URL+"/"),
-	)
-	require.NoError(t, err)
-
-	p := &DefaultProvider{
-		computeService:  svc,
-		projectID:       "p",
-		projectNumCache: cache.New(0, 0),
+	t.Setenv("GCE_METADATA_HOST", strings.TrimPrefix(srv.URL, "http://"))
+	newProvider := func() *DefaultProvider {
+		return &DefaultProvider{projectID: "p", projectNumCache: cache.New(0, 0)}
 	}
 
-	number, err := p.ProjectNumber(context.Background())
+	p := newProvider()
+	got, err := p.ProjectNumber(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, numericID, number)
-	number, err = p.ProjectNumber(context.Background())
+	require.Equal(t, uint64(123456789), got)
+	_, err = p.ProjectNumber(context.Background())
 	require.NoError(t, err)
-	require.Equal(t, numericID, number)
 	require.Equal(t, int32(1), calls.Load(), "the immutable project number must be read once")
 
-	numericID = 0
-	p.projectNumCache = cache.New(0, 0)
-	_, err = p.ProjectNumber(context.Background())
-	require.Error(t, err, "a project without a numeric ID must not be treated as authoritative")
+	hostProject = "other-project"
+	_, err = newProvider().ProjectNumber(context.Background())
+	require.Error(t, err, "a controller outside the configured project must not vouch for its number")
+	hostProject = "p"
+
+	for _, invalid := range []string{"", "0", "not-a-number"} {
+		number = invalid
+		failing := newProvider()
+		_, err = failing.ProjectNumber(context.Background())
+		require.Error(t, err, "%q must not be treated as a project number", invalid)
+		_, cached := failing.projectNumCache.Get(projectNumberCacheKey)
+		require.False(t, cached, "a failed lookup must not be cached")
+	}
 }
 
 func TestShieldedNodesEnabled(t *testing.T) {

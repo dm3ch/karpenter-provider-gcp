@@ -198,7 +198,7 @@ func TestReconcileIndependentAttestationFixture(t *testing.T) {
 			api, double := newKubeAPIDouble(t)
 			double.sarAllowed = true
 			controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
-				return &instance.InstanceIdentity{ProjectID: attestationVM.ProjectName, ProjectNumber: attestationVM.ProjectID,
+				return &instance.InstanceIdentity{ProjectID: attestationVM.ProjectID, ProjectNumber: attestationVM.ProjectNumber,
 					Zone: attestationVM.Zone, Name: attestationVM.Name, NumericID: attestationVM.ID, AttestationKeyPEM: fixture.AttestationKey}, nil
 			}))
 			controller.client = &csrReadClient{request: bootstrapCSR(request), claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
