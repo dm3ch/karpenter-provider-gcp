@@ -63,6 +63,10 @@ var _ = DescribeTable("ChannelImageSelection", Label("suite:channel-image-select
 	Entry("Ubuntu osVersion default / version: latest / amd64 / on-demand",
 		familyChannelTestCase{family: gcpv1alpha1.ImageFamilyUbuntu, osVersion: gcpv1alpha1.ImageOSVersionDefault, version: "latest"},
 		SpecTimeout(15*time.Minute)),
+	// Omitting osVersion means default, so it must resolve the same 24.04 image on these clusters.
+	Entry("Ubuntu osVersion omitted / version: latest / amd64 / on-demand",
+		familyChannelTestCase{family: gcpv1alpha1.ImageFamilyUbuntu, version: "latest"},
+		SpecTimeout(15*time.Minute)),
 	// osVersion 26.04 skips itself when GKE publishes no clean 26.04 image for the cluster's
 	// minor (it does not for 1.36, which this suite runs on today), so it starts running by
 	// itself once the E2E cluster is on a minor that has 26.04 images (1.37 and later).
@@ -172,7 +176,8 @@ func expectResolvedImage(ctx context.Context, tc familyChannelTestCase, sourceIm
 			"resolved image is not an Ubuntu 26.04 image: %s", sourceImages[0])
 		Expect(sourceImages[0]).To(ContainSubstring(expectedVer),
 			"resolved Ubuntu 26.04 image does not contain expected version %s", expectedVer)
-	case tc.version == "latest" && (tc.family == gcpv1alpha1.ImageFamilyUbuntu2404 || tc.osVersion == "24.04" || tc.osVersion == gcpv1alpha1.ImageOSVersionDefault):
+	case tc.version == "latest" && (tc.family == gcpv1alpha1.ImageFamilyUbuntu2404 || tc.osVersion == "24.04" || tc.osVersion == gcpv1alpha1.ImageOSVersionDefault ||
+		(tc.family == gcpv1alpha1.ImageFamilyUbuntu && tc.osVersion == "")):
 		// For version: latest, the resolved image must embed the independently-queried Ubuntu 24.04 version.
 		expectedVer := env.ResolveCurrentUbuntuVersion(ctx)
 		Expect(sourceImages[0]).To(ContainSubstring("ubuntu-gke-2404-"),

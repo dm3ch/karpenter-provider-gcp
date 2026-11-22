@@ -278,7 +278,6 @@ type AdditionalNetworkInterface struct {
 // +kubebuilder:validation:XValidation:message="Ubuntu2404 version must be 'latest' or 'vYYYYMMDD' with an optional release letter (e.g. 'v20260416', 'v20251218a')",rule="!has(self.version) || !has(self.family) || self.family != 'Ubuntu2404' || self.version == 'latest' || self.version.matches('^v[0-9]{8}[a-z]?$')"
 // +kubebuilder:validation:XValidation:message="Ubuntu2204 version must be 'latest' or 'vYYYYMMDD' with an optional release letter (e.g. 'v20260416', 'v20251218a')",rule="!has(self.version) || !has(self.family) || self.family != 'Ubuntu2204' || self.version == 'latest' || self.version.matches('^v[0-9]{8}[a-z]?$')"
 // +kubebuilder:validation:XValidation:message="Ubuntu version must be 'latest' or 'vYYYYMMDD' with an optional release letter (e.g. 'v20260416', 'v20251218a')",rule="!has(self.version) || !has(self.family) || self.family != 'Ubuntu' || self.version == 'latest' || self.version.matches('^v[0-9]{8}[a-z]?$')"
-// +kubebuilder:validation:XValidation:message="family Ubuntu requires osVersion: a release such as '24.04', or 'default' for the Ubuntu release GKE uses by default for the cluster version",rule="!has(self.family) || self.family != 'Ubuntu' || has(self.osVersion)"
 // +kubebuilder:validation:XValidation:message="osVersion is only supported for family Ubuntu",rule="!has(self.osVersion) || (has(self.family) && self.family == 'Ubuntu')"
 type ImageSelectorTerm struct {
 	// Deprecated: use Family with Channel or Version instead.
@@ -303,14 +302,14 @@ type ImageSelectorTerm struct {
 	// +optional
 	Family string `json:"family,omitempty"`
 	// OSVersion selects the Ubuntu release for family Ubuntu: a release such as "24.04", or
-	// "default" for the release GKE uses by default for the cluster's Kubernetes version. It is
-	// required for Ubuntu and not allowed for other families. A fixed release never changes on its
-	// own; "default" follows GKE and can change when the cluster is upgraded across a version GKE
-	// moved its default at, which drifts nodes to the new image. For cluster versions this Karpenter
-	// release has not verified, "default" uses GKE's current documented default (24.04) and logs a
-	// warning. GKE publishes each release only for some Kubernetes minors; an unavailable release
-	// fails image resolution instead of falling back to another release.
-	// Version still pins the image build within the release.
+	// "default" for the release GKE uses by default for the cluster's Kubernetes version. Omitting
+	// it for family Ubuntu means "default". It is not allowed for other families. A fixed release
+	// never changes on its own; "default" follows GKE and can change when the cluster is upgraded
+	// across a version GKE moved its default at, which drifts nodes to the new image. For cluster
+	// versions this Karpenter release has not verified, "default" uses GKE's current documented
+	// default (24.04) and logs a warning. GKE publishes each release only for some Kubernetes
+	// minors; an unavailable release fails image resolution instead of falling back to another
+	// release. Version still pins the image build within the release.
 	// +kubebuilder:validation:Pattern=`^(default|[0-9]{2}\.[0-9]{2})$`
 	// +kubebuilder:validation:MaxLength=7
 	// +optional

@@ -717,6 +717,8 @@ func TestListUbuntuOSVersionSelectsRelease(t *testing.T) {
 
 	for name, term := range map[string]v1alpha1.ImageSelectorTerm{
 		"osVersion 24.04":      {Family: "Ubuntu", OSVersion: "24.04", Version: "latest"},
+		"osVersion omitted":    {Family: "Ubuntu", Version: "latest"},
+		"osVersion default":    {Family: "Ubuntu", OSVersion: "default", Version: "latest"},
 		"deprecated family":    {Family: "Ubuntu2404", Version: "latest"},
 		"legacy Ubuntu alias":  {Alias: "Ubuntu@latest"},     //nolint:staticcheck
 		"legacy release alias": {Alias: "Ubuntu2404@latest"}, //nolint:staticcheck
@@ -830,6 +832,23 @@ func TestListUbuntuOSVersionDefault(t *testing.T) {
 		"projects/ubuntu-os-gke-cloud/global/images/ubuntu-gke-2204-1-31-v20260810",
 		"projects/ubuntu-os-gke-cloud/global/images/ubuntu-gke-2204-1-31-arm64-v20260810",
 	}, imageSources(got))
+
+	// Omitting osVersion is the same as "default"; the legacy alias is always 24.04, so on 1.31 they differ.
+	omitted, err := NewDefaultProvider(buildComputeService(t, srv), &fakeVersionProvider{version: "v1.31.14-gke.2116000"}, &stubGKEProvider{}).
+		List(context.Background(), &v1alpha1.GCENodeClass{Spec: v1alpha1.GCENodeClassSpec{
+			ImageSelectorTerms: []v1alpha1.ImageSelectorTerm{{Family: "Ubuntu", Version: "latest"}},
+		}})
+	require.NoError(t, err)
+	require.Equal(t, imageSources(got), imageSources(omitted))
+	alias, err := NewDefaultProvider(buildComputeService(t, srv), &fakeVersionProvider{version: "v1.31.14-gke.2116000"}, &stubGKEProvider{}).
+		List(context.Background(), &v1alpha1.GCENodeClass{Spec: v1alpha1.GCENodeClassSpec{
+			ImageSelectorTerms: []v1alpha1.ImageSelectorTerm{{Alias: "Ubuntu@latest"}}, //nolint:staticcheck
+		}})
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"projects/ubuntu-os-gke-cloud/global/images/ubuntu-gke-2404-1-31-amd64-v20240916",
+		"projects/ubuntu-os-gke-cloud/global/images/ubuntu-gke-2404-1-31-arm64-v20240916",
+	}, imageSources(alias))
 
 	got, err = list("v1.36.5-gke.2262000")
 	require.NoError(t, err)

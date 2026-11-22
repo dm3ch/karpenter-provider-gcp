@@ -157,8 +157,12 @@ func (p *DefaultProvider) resolveAliasTerm(ctx context.Context, term v1alpha1.Im
 		return nil, fmt.Errorf("malformed alias %q: expected family@version", term.Alias)
 	}
 	family, version := components[0], components[1]
-	// The Ubuntu alias has always meant Ubuntu 24.04.
-	provider, err := p.imageFamilyProvider(family, "")
+	// The Ubuntu alias has always meant Ubuntu 24.04, not the GKE default.
+	osVersion := ""
+	if family == v1alpha1.ImageFamilyUbuntu {
+		osVersion = "24.04"
+	}
+	provider, err := p.imageFamilyProvider(family, osVersion)
 	if err != nil {
 		return nil, fmt.Errorf("unsupported alias family %q", family)
 	}
@@ -253,8 +257,9 @@ func (p *DefaultProvider) resolveVersion(ctx context.Context, term v1alpha1.Imag
 }
 
 // imageFamilyProvider returns the resolver for a family and, for Ubuntu, its release ("24.04" or "default").
-// An empty Ubuntu osVersion means the legacy alias, which is 24.04; the deprecated Ubuntu2204 and
-// Ubuntu2404 families carry their release in the name. An unavailable release is a configuration
+// An empty Ubuntu osVersion means the GKE default release, the same as "default"; the deprecated
+// Ubuntu2204 and Ubuntu2404 families carry their release in the name, and the legacy alias passes
+// "24.04" explicitly. An unavailable release is a configuration
 // error, never a fallback to another release.
 func (p *DefaultProvider) imageFamilyProvider(family, osVersion string) (ImageFamily, error) {
 	var release string
@@ -266,10 +271,8 @@ func (p *DefaultProvider) imageFamilyProvider(family, osVersion string) (ImageFa
 	case v1alpha1.ImageFamilyUbuntu2404:
 		release = "2404"
 	case v1alpha1.ImageFamilyUbuntu:
-		release = "2404"
 		switch osVersion {
-		case "":
-		case v1alpha1.ImageOSVersionDefault:
+		case "", v1alpha1.ImageOSVersionDefault:
 			release = ubuntuReleaseDefault
 		default:
 			release = strings.Replace(osVersion, ".", "", 1)

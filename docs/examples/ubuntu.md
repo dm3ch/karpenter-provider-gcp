@@ -1,6 +1,6 @@
 # Ubuntu nodes
 
-Use Ubuntu instead of Container-Optimized OS when workloads require a general-purpose Linux distribution. `osVersion` is required: either a fixed release or `default`, the release GKE uses for your cluster version. The older `Ubuntu2404`/`Ubuntu2204` families still work but are deprecated.
+Use Ubuntu instead of Container-Optimized OS when workloads require a general-purpose Linux distribution. `osVersion` is a fixed release or `default`, the release GKE uses for your cluster version; leaving it out means `default`. The older `Ubuntu2404`/`Ubuntu2204` families still work but are deprecated.
 
 See [`examples/nodeclass/ubuntu-gcenodeclass.yaml`](https://github.com/karpenter-gcp/karpenter-provider-gcp/blob/main/examples/nodeclass/ubuntu-gcenodeclass.yaml).
 

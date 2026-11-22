@@ -291,7 +291,9 @@ func TestGCENodeClassCRDUbuntuOSVersion(t *testing.T) {
 	requireAdmitted(t, spec(map[string]any{"family": "Ubuntu2204", "version": "v20260416"}))
 	requireAdmitted(t, spec(map[string]any{"family": "ContainerOptimizedOS", "channel": "stable"}))
 
-	requireRejected(t, spec(map[string]any{"family": "Ubuntu", "version": "latest"}), "requires osVersion")
+	// An omitted osVersion is valid and means "default".
+	requireAdmitted(t, spec(map[string]any{"family": "Ubuntu", "version": "latest"}))
+	requireAdmitted(t, spec(map[string]any{"family": "Ubuntu", "version": "v20260416"}))
 	requireRejected(t, spec(map[string]any{"family": "Ubuntu2404", "osVersion": "24.04", "version": "latest"}), "only supported for family Ubuntu")
 	requireRejected(t, spec(map[string]any{"family": "ContainerOptimizedOS", "osVersion": "24.04", "version": "latest"}), "only supported for family Ubuntu")
 	requireRejected(t, spec(map[string]any{"family": "Ubuntu", "osVersion": "24.04", "version": "20260416"}), "Ubuntu version must be")
