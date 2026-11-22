@@ -7,7 +7,7 @@
 
 ## Summary
 
-GKE publishes Ubuntu node images in `ubuntu-os-gke-cloud` for Kubernetes before 1.36 and in `gke-ubuntu-node-images` for 1.36 and later. Karpenter reads only the former. This proposal selects the image project from the cluster's Kubernetes minor, replaces the per-series regex copies with a release table, and keeps node drift stable across the project change. It also reshapes how an Ubuntu release is chosen: `family: Ubuntu` with a required `osVersion` (`"22.04"`, `"24.04"`, `"26.04"`) replaces one enum value per release, so Ubuntu 26.04 and later releases need no new family and no CRD change.
+GKE publishes Ubuntu node images in `ubuntu-os-gke-cloud` for Kubernetes before 1.36 and in `gke-ubuntu-node-images` for 1.36 and later ([GKE documentation, "Node image source projects"](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/node-images#node_image_source_projects)). The GKE release notes and the 1.36 changelog contain no entry announcing the new project (checked 2026-11-22), so that page is the only official source. Karpenter reads only the former. This proposal selects the image project from the cluster's Kubernetes minor, replaces the per-series regex copies with a release table, and keeps node drift stable across the project change. It also reshapes how an Ubuntu release is chosen: `family: Ubuntu` with a required `osVersion` (`"22.04"`, `"24.04"`, `"26.04"`) replaces one enum value per release, so Ubuntu 26.04 and later releases need no new family and no CRD change.
 
 ## Motivation
 
