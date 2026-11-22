@@ -79,7 +79,7 @@ Other approvers operate independently, and a competing terminal denial is not ov
 
 ## Prerequisites and migration
 
-- Evidence so far: the native proof format, native cache-rotation branch and the required bootstrap `nodeclient` authorization were observed in plaintext/read-only probes on Shielded GKE **1.35.8-gke.1796000** with COS/amd64 standalone VMs and vTPM enabled. No candidate controller deployment has been validated: the provider's own approval path, certificate adoption, rotation adoption and drain behavior remain unexercised. Ubuntu, other GKE versions and arm64 are unevaluated.
+- Evidence so far: the native proof format, native cache-rotation branch and the required bootstrap `nodeclient` authorization were observed in plaintext/read-only probes on Shielded GKE **1.35.8-gke.1796000** with COS/amd64 standalone VMs and vTPM enabled. A candidate deployment has since been validated live; see [Live validation](#live-validation). Certificate rotation, drain behavior, Ubuntu, other GKE versions and arm64 remain unexercised.
 - `enableVtpm: false` remains expressible but is known ineligible: without a vTPM there is no attestation key, so attested enrollment cannot succeed.
 - IAM: `compute.instances.getShieldedInstanceIdentity` (new) for the controller service account, in [`deploy/iam/karpenter-controller-role.yaml`](../deploy/iam/karpenter-controller-role.yaml). The project number is read from the metadata server of the controller's own VM, which must be in the configured project; Compute's `Project.id` was measured not to equal the project number on real GKE.
 - Kubernetes RBAC: the chart now grants `create` on `subjectaccessreviews`, plus the existing CSR approval permissions.
@@ -97,23 +97,34 @@ The [security contract's regression-test section](../docs/security/csr-approval.
 
 `test/suites/provisioning/csr.go` provisions one COS/amd64 on-demand vTPM node through the existing helpers and asserts that the NodeClaim records the numeric instance ID of the live VM, that the VM has vTPM enabled, that the native kubelet client CSR contains the four required attestation blocks and at most one optional attestation certificate, and that it was approved by `KarpenterAutoApprover` with a certificate issued. It does not fabricate rotation, and it assumes a Shielded GKE Nodes cluster: no spec covers native enrollment on a cluster with the setting disabled or the candidate controller's legacy approval.
 
+### Live validation
+
+A candidate build was exercised on a persistent Shielded GKE **1.36.4-gke.2046003** cluster with COS/amd64 on-demand nodes (vTPM enabled), upgrading from published v0.8.3:
+
+- An old registered node had no `instance-numeric-id` annotation. After the upgrade its claim reported `InstanceIncarnationDrift`.
+- A NodePool budget of `nodes: "0"` for `Drifted` held the replacement back, and the controller reported the blocking budget.
+- With the budget relaxed, a replacement VM launched and recorded the live numeric ID. Its bootstrap CSR carried the four proof blocks, was approved by `KarpenterAutoApprover` with a certificate issued, and the workload moved. The old node and VM were removed.
+- **The first candidate build failed this test.** It took the authoritative project number from the Compute `Project` resource, whose `id` is not the project number, so every real proof was rejected and the replacement never registered. The number now comes from the controller's metadata server. Unit fakes could not reveal this; only the live run did.
+
+This covers one profile and one dynamic NodePool.
+
 ### Outstanding real-GKE validation
 
-The following still requires a separately approved candidate deployment and was not executed:
+The following still requires a separately approved candidate deployment and has not been executed:
 
-1. Confirm the approved request is attributable to the candidate controller and the node adopts its certificate.
-2. Exercise the installed native rotation path without exporting keys, and assert continued kubelet health.
-3. Repeat under a PDB-held drain and verify the node stays healthy until release.
-4. Verify tampered, different-key and cross-instance proofs cannot acquire a certificate, without claiming same-key replay rejection.
-5. Evaluate Ubuntu and other supported profiles before widening the matrix.
-6. Exercise upgrade drift, replacement enrollment and workload continuity under normal budgets, including static terminate-first where enabled; these rolling behaviors remain unvalidated by local tests.
+1. Exercise the installed native rotation path without exporting keys, and assert continued kubelet health.
+2. Repeat under a PDB-held drain and verify the node stays healthy until release.
+3. Verify tampered, different-key and cross-instance proofs cannot acquire a certificate, without claiming same-key replay rejection.
+4. Evaluate Ubuntu and other supported profiles before widening the matrix.
+5. Exercise static NodePools, including terminate-first where enabled, and a larger fleet rollout.
 
 ## Acceptance criteria
 
 - [X] Pass the native initial-enrollment and rotation compatibility gate.
 - [X] Review the support/migration contract and the concrete incarnation association.
 - [X] Validate cryptographic interoperability and authorization locally.
-- [ ] Validate against real GKE enrollment, native reissuance and drain scenarios with a candidate deployment.
+- [X] Validate real GKE enrollment and replacement of an existing node on upgrade with a candidate deployment (one profile).
+- [ ] Validate native certificate reissuance and drain-time re-enrollment.
 - [ ] Validate the candidate controller's legacy approval (SAR for `kubelet` and enrollment on a cluster with Shielded GKE Nodes disabled) with a candidate deployment.
 
 ## Alternatives considered

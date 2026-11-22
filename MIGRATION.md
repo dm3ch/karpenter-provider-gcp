@@ -75,9 +75,9 @@ The `kubelet-nodepool-bootstrap` and `kubelet-bootstrap` identities must now pre
 
 > **Temporary upgrade bridge:** incarnation drift is planned for removal after v0.10, once the supported upgrade path requires pre-incarnation installations to roll their nodes through v0.10 first. It is not an automatic version cutoff.
 
-**Clusters with Shielded GKE Nodes disabled** enroll as requester `kubelet` without a proof. The controller approves it only for initial enrollment of one launched, unregistered claim whose live VM matches the recorded ID and UID label, and only while a fresh read of the cluster setting (existing `container.clusters.get`) says disabled. This is **weaker**: the VM association is not proof of who sent the request, and a holder of the shared credential can request another pending claim. Enabling Shielded GKE Nodes stops it. It was validated on one native GKE profile and local tests only.
+**Clusters with Shielded GKE Nodes disabled** enroll as requester `kubelet` without a proof. The controller approves it only for initial enrollment of one launched, unregistered claim whose live VM matches the recorded ID and UID label, and only while a fresh read of the cluster setting (existing `container.clusters.get`) says disabled. This is **weaker**: the VM association is not proof of who sent the request, and a holder of the shared credential can request another pending claim. Enabling Shielded GKE Nodes stops it. Its request shape was observed on one native GKE profile; the controller's legacy approval has not been run against real GKE.
 
-Real-GKE rotation, drain re-enrollment and candidate-controller enrollment remain unvalidated; see [Proposal 0015](proposals/0015-gce-instance-bound-csr-approval.md).
+**Validated live** on one profile (Shielded GKE 1.36.4, COS/amd64, one dynamic NodePool): upgrading from v0.8.3 marks the old node `InstanceIncarnationDrift`, a `nodes: "0"` budget for `Drifted` holds the replacement back, and once relaxed the replacement enrolls with an attested CSR approved by the controller while the old node is removed. **Not validated:** static pools, certificate rotation, drain-time re-enrollment, other images, architectures and GKE versions. See [Proposal 0015](proposals/0015-gce-instance-bound-csr-approval.md).
 
 ### Release distribution moves to GHCR OCI
 
