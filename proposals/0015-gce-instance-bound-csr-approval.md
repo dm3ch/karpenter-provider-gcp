@@ -93,9 +93,9 @@ Other approvers operate independently, and a competing terminal denial is not ov
 
 The [security contract's regression-test section](../docs/security/csr-approval.md#regression-tests) records the offline commands and covered boundaries. Tests include locally generated proofs/legacy requests, original-identity authorization, lifecycle and policy ordering, live incarnation and owned adoption, and upgrade drift. They do not replace the candidate-controller validation below.
 
-### Added GKE integration coverage (not executed)
+### GKE integration coverage
 
-`test/suites/provisioning/csr.go` provisions one COS/amd64 on-demand vTPM node through the existing helpers and asserts that the NodeClaim records the numeric instance ID of the live VM, that the VM has vTPM enabled, that the native kubelet client CSR contains the four required attestation blocks and at most one optional attestation certificate, and that it was approved by `KarpenterAutoApprover` with a certificate issued. It does not fabricate rotation, and it assumes a Shielded GKE Nodes cluster: no spec covers native enrollment on a cluster with the setting disabled or the candidate controller's legacy approval.
+`test/suites/provisioning/csr.go` provisions one COS/amd64 on-demand vTPM node through the existing helpers and asserts that the NodeClaim records the numeric instance ID of the live VM, that the VM has vTPM enabled, that the native kubelet client CSR contains the four required attestation blocks and at most one optional attestation certificate, and that it was approved by `KarpenterAutoApprover` with a certificate issued. It passed in a live `standard` preset run (20 workers) on Shielded GKE 1.36.4 at commit `3bfd55be`; in that run 67 specs passed and one unrelated arm64 launch spec failed on machine-type zone availability, so arm64 enrollment was not exercised. It does not fabricate rotation, and it assumes a Shielded GKE Nodes cluster: no spec covers native enrollment on a cluster with the setting disabled or the candidate controller's legacy approval.
 
 ### Live validation
 
