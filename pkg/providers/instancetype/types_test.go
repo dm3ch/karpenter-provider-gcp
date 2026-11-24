@@ -224,19 +224,22 @@ func TestListUnavailableOfferingExpiryDoesNotGrowStaticCache(t *testing.T) {
 	p := newTestProvider()
 	nodeClass := &v1alpha1.GCENodeClass{}
 
-	p.unavailableOfferings.MarkUnavailableWithTTL(ctx, "ICE", "n2-standard-4", "us-central1-a", karpv1.CapacityTypeSpot, time.Millisecond)
+	// A long TTL keeps this check independent of how long the first, cold List takes.
+	p.unavailableOfferings.MarkUnavailableWithTTL(ctx, "ICE", "n2-standard-4", "us-central1-a", karpv1.CapacityTypeSpot, time.Hour)
 
 	unavailable, err := p.List(ctx, nodeClass)
 	assert.NoError(t, err)
 	assert.NotEmpty(t, unavailable)
 	assert.False(t, spotOfferingAvailable(unavailable[0].Offerings))
 
-	time.Sleep(2 * time.Millisecond)
+	// Re-marking replaces the entry's expiry. Poll until it lapses rather than sleeping
+	// a fixed time, so the check does not depend on scheduler speed.
+	p.unavailableOfferings.MarkUnavailableWithTTL(ctx, "ICE", "n2-standard-4", "us-central1-a", karpv1.CapacityTypeSpot, time.Millisecond)
+	assert.Eventually(t, func() bool {
+		available, err := p.List(ctx, nodeClass)
+		return err == nil && len(available) > 0 && spotOfferingAvailable(available[0].Offerings)
+	}, 5*time.Second, time.Millisecond, "an expired unavailable offering must become available again")
 
-	available, err := p.List(ctx, nodeClass)
-	assert.NoError(t, err)
-	assert.NotEmpty(t, available)
-	assert.True(t, spotOfferingAvailable(available[0].Offerings))
 	assert.Equal(t, 1, p.staticInstanceTypesCache.ItemCount(),
 		"unavailable offering expiry must not create new static instance type cache entries")
 }
