@@ -196,6 +196,8 @@ func TestKCMaxPods(t *testing.T) {
 		{name: "podsPerCore=0 → nodeClassMaxPods unchanged", nodeClassMaxPods: 110, podsPerCore: lo.ToPtr[int32](0), cpus: 4, want: 110},
 		{name: "podsPerCore × cpus < max → podsPerCore wins", nodeClassMaxPods: 110, podsPerCore: lo.ToPtr[int32](8), cpus: 2, want: 16},
 		{name: "podsPerCore × cpus ≥ max → max wins", nodeClassMaxPods: 64, podsPerCore: lo.ToPtr[int32](8), cpus: 16, want: 64},
+		{name: "maxPods above 256 is advertised unchanged", nodeClassMaxPods: 512, podsPerCore: nil, cpus: 4, want: 512},
+		{name: "podsPerCore caps maxPods above 256", nodeClassMaxPods: 512, podsPerCore: lo.ToPtr[int32](16), cpus: 8, want: 128},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

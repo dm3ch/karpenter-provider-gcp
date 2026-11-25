@@ -64,7 +64,6 @@ import (
 
 const (
 	maxInstanceTypes            = 20
-	maxNodeCIDR                 = 23
 	instanceCacheExpiration     = 15 * time.Second
 	zoneOperationPollInterval   = 1 * time.Second
 	defaultZoneOperationTimeout = 2 * time.Minute
@@ -1242,6 +1241,9 @@ func buildAdditionalInterfaces(clusterNetwork string, overrides []v1alpha1.Addit
 
 // podCIDRRange returns the /N alias IP range size for the given maxPods count,
 // following https://cloud.google.com/kubernetes-engine/docs/how-to/flexible-pod-cidr
+// (the block holds at least twice maxPods addresses). GKE supports at most 512
+// pods per node, which the CRD enforces; larger values fall back to the /22 that
+// 512 uses.
 func podCIDRRange(maxPods int32) int32 {
 	switch {
 	case maxPods <= 8:
@@ -1254,8 +1256,10 @@ func podCIDRRange(maxPods int32) int32 {
 		return 25
 	case maxPods <= 128:
 		return 24
+	case maxPods <= 256:
+		return 23
 	default:
-		return int32(maxNodeCIDR)
+		return 22
 	}
 }
 

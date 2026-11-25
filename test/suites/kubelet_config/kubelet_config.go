@@ -162,6 +162,26 @@ var _ = DescribeTable("kubeletConfiguration honored on provisioned nodes (#398)"
 		assert: assertMaxPodsCapacity(50),
 	}, SpecTimeout(15*time.Minute)),
 
+	// maxPods above 256 needs a /22 Pod alias range per node (#799). The node's
+	// PodCIDR is the alias range GCE assigned, so its prefix proves the range
+	// was sized from maxPods rather than capped at /23.
+	Entry("COS: maxPods above 256 gets a /22 Pod range (#799)", kubeletConfigCase{
+		tc: environment.TestCase{
+			CapacityType:  karpv1.CapacityTypeOnDemand,
+			Arch:          karpv1.ArchitectureAmd64,
+			Families:      []string{"n2"},
+			InstanceTypes: []string{"n2-standard-4"},
+			ImageFamily:   gcpv1alpha1.ImageFamilyContainerOptimizedOS,
+		},
+		kubeletConfig: map[string]any{
+			"maxPods": int64(300),
+		},
+		assert: func(node *corev1.Node) {
+			assertMaxPodsCapacity(300)(node)
+			assertPodCIDRPrefix(22)(node)
+		},
+	}, SpecTimeout(15*time.Minute)),
+
 	Entry("COS: static CPU manager policy", kubeletConfigCase{
 		tc: environment.TestCase{
 			CapacityType:  karpv1.CapacityTypeOnDemand,
@@ -425,6 +445,24 @@ func assertMaxPodsCapacity(want int64) func(*corev1.Node) {
 		pods := node.Status.Capacity[corev1.ResourcePods]
 		Expect(pods.Value()).To(Equal(want),
 			"capacity.pods %s must equal kubeletConfiguration.maxPods", pods.String())
+	}
+}
+
+// assertPodCIDRPrefix returns an assertion that the node's IPv4 Pod CIDR has
+// the given prefix length.
+func assertPodCIDRPrefix(want int) func(*corev1.Node) {
+	return func(node *corev1.Node) {
+		Expect(node.Spec.PodCIDRs).NotTo(BeEmpty(), "node %s has no PodCIDR", node.Name)
+		var ipv4 string
+		for _, cidr := range node.Spec.PodCIDRs {
+			if !strings.Contains(cidr, ":") {
+				ipv4 = cidr
+				break
+			}
+		}
+		Expect(ipv4).NotTo(BeEmpty(), "node %s has no IPv4 PodCIDR in %v", node.Name, node.Spec.PodCIDRs)
+		Expect(strings.HasSuffix(ipv4, "/"+strconv.Itoa(want))).To(BeTrue(),
+			"podCIDR %s must be a /%d for the configured maxPods", ipv4, want)
 	}
 }
 

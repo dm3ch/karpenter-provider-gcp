@@ -145,6 +145,22 @@ kubeletConfiguration:
 
 Both values are reflected in `node.status.capacity.pods` and used by the scheduler.
 
+`maxPods` accepts 0–512, matching GKE Standard's limit, and also sizes the node's Pod alias IP range as GKE's `max_pods_per_node` does:
+
+| `maxPods` | Alias range per node    |
+|-----------|-------------------------|
+| 1–8       | `/28`                   |
+| 9–16      | `/27`                   |
+| 17–32     | `/26`                   |
+| 33–64     | `/25`                   |
+| 65–128    | `/24`                   |
+| 129–256   | `/23`                   |
+| 257–512   | `/22` (1,024 addresses) |
+
+The range is sized from `maxPods`, not from the lower capacity `podsPerCore` may produce. `podsPerCore` cannot raise the limit: without `maxPods`, nodes keep the default of 110 pods. A `/22` block per node needs a Pod secondary range with room for it, for example `/21` holds only two nodes. If no range can supply the block, Compute rejects the launch; when it reports IP space exhausted, the usual [pod range fallback](networking.md#custom-pod-ip-range) and offering backoff apply. Raising `maxPods` on an existing NodeClass replaces nodes through normal drift; existing nodes keep their range.
+
+GKE's [release note of 2026-09-25](https://docs.cloud.google.com/kubernetes-engine/docs/release-notes#September_25_2026) does not state a minimum GKE version for 257–512 Pods per node; check the [GKE documentation](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/flexible-pod-cidr) for your cluster's version before relying on it.
+
 ### Other settings
 
 Additional kubelet configuration options:

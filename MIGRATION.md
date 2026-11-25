@@ -20,6 +20,10 @@ Allow controller HTTPS access to `https://storage.googleapis.com/gke-release/kub
 
 Existing nodes are not upgraded in place, and a release-only status change with the same image is not a new drift trigger. See [Bootstrap release](docs/image-selection.md#bootstrap-release).
 
+### `kubeletConfiguration.maxPods` is limited to 512
+
+`spec.kubeletConfiguration.maxPods` now accepts at most 512, GKE Standard's limit, and values from 257 to 512 get a `/22` Pod alias range per node instead of `/23`. Upgrade CRDs before the controller. A NodeClass with a larger value is rejected on its next update; lower it first. No other action is required: values up to 256 keep their ranges. A `/22` per node needs a Pod secondary range with room for it. See [Pod density](docs/examples/advanced.md#pod-density).
+
 ### Release distribution moves to GHCR OCI
 
 Controller images use `ghcr.io/karpenter-gcp/karpenter-provider-gcp:vX.Y.Z`. Helm charts use `oci://ghcr.io/karpenter-gcp/karpenter-provider-gcp/charts/karpenter` and `/karpenter-crd` with version `X.Y.Z`. Use Helm 3.8+ or Helm 4; replace indexed chart references in Helm automation and allow GHCR image pulls in registry policies. Keep existing release names, namespaces and configured values; upgrade CRDs before the controller. A pinned `controller.image.repository` still overrides the new default and must be updated explicitly.

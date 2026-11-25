@@ -495,8 +495,11 @@ spec:
                   maxPods:
                     description: |-
                       MaxPods is an override for the maximum number of pods that can run on
-                      a worker node instance.
+                      a worker node instance. It also sizes the node's pod alias IP range, as
+                      GKE max_pods_per_node does: up to 512 pods are supported on GKE Standard
+                      clusters, and values above 256 use a /22 range per node.
                     format: int32
+                    maximum: 512
                     minimum: 0
                     type: integer
                   memorySwap:

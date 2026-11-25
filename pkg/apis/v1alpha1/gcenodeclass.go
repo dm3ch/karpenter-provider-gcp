@@ -342,8 +342,11 @@ type KubeletConfiguration struct {
 	//+optional
 	ClusterDNS []string `json:"clusterDNS,omitempty"`
 	// MaxPods is an override for the maximum number of pods that can run on
-	// a worker node instance.
+	// a worker node instance. It also sizes the node's pod alias IP range, as
+	// GKE max_pods_per_node does: up to 512 pods are supported on GKE Standard
+	// clusters, and values above 256 use a /22 range per node.
 	// +kubebuilder:validation:Minimum:=0
+	// +kubebuilder:validation:Maximum:=512
 	// +optional
 	MaxPods *int32 `json:"maxPods,omitempty"`
 	// PodsPerCore is an override for the number of pods that can run on a worker node

@@ -1481,6 +1481,56 @@ func TestSetupNetworkInterfaces(t *testing.T) {
 
 		require.Equal(t, "/26", result[0].AliasIpRanges[0].IpCidrRange)
 	})
+
+	t.Run("maxPods above 256 requests a /22 alias range", func(t *testing.T) {
+		t.Parallel()
+
+		maxPods := int32(512)
+		nodeClass := &v1alpha1.GCENodeClass{
+			Spec: v1alpha1.GCENodeClassSpec{
+				KubeletConfiguration: &v1alpha1.KubeletConfiguration{MaxPods: &maxPods},
+			},
+		}
+		cluster := makeCluster("net", "subnet", "pods", false)
+		result := p.setupNetworkInterfaces(cluster, nodeClass)
+
+		require.Equal(t, "/22", result[0].AliasIpRanges[0].IpCidrRange)
+	})
+}
+
+// TestPodCIDRRange pins the GKE flexible Pod CIDR table
+// (https://cloud.google.com/kubernetes-engine/docs/how-to/flexible-pod-cidr):
+// every block holds at least twice maxPods addresses, up to /22 for 512 pods.
+func TestPodCIDRRange(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		maxPods int32
+		want    int32
+	}{
+		{8, 28},
+		{9, 27},
+		{16, 27},
+		{17, 26},
+		{32, 26},
+		{33, 25},
+		{64, 25},
+		{65, 24},
+		{110, 24},
+		{128, 24},
+		{129, 23},
+		{256, 23},
+		{257, 22},
+		{300, 22},
+		{512, 22},
+		// The CRD rejects values above 512; the provider must not widen the block past GKE's /22.
+		{513, 22},
+	} {
+		t.Run(fmt.Sprintf("maxPods %d", tc.maxPods), func(t *testing.T) {
+			t.Parallel()
+			require.Equal(t, tc.want, podCIDRRange(tc.maxPods))
+		})
+	}
 }
 
 func TestSetupNetworkInterfaces_AdditionalInterfaceWithSubnetwork(t *testing.T) {

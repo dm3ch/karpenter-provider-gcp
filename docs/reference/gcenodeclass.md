@@ -355,7 +355,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `clusterDNS` _string array_ | clusterDNS is a list of IP addresses for the cluster DNS server.<br />Note that not all providers may use all addresses. |  | Optional: \{\} <br /> |
-| `maxPods` _integer_ | MaxPods is an override for the maximum number of pods that can run on<br />a worker node instance. |  | Minimum: 0 <br />Optional: \{\} <br /> |
+| `maxPods` _integer_ | MaxPods is an override for the maximum number of pods that can run on<br />a worker node instance. It also sizes the node's pod alias IP range, as<br />GKE max_pods_per_node does: up to 512 pods are supported on GKE Standard<br />clusters, and values above 256 use a /22 range per node. |  | Maximum: 512 <br />Minimum: 0 <br />Optional: \{\} <br /> |
 | `podsPerCore` _integer_ | PodsPerCore is an override for the number of pods that can run on a worker node<br />instance based on the number of cpu cores. This value cannot exceed MaxPods, so, if<br />MaxPods is a lower value, that value will be used. |  | Minimum: 0 <br />Optional: \{\} <br /> |
 | `systemReserved` _object (keys:string, values:[KubeletQuantity](#kubeletquantity))_ | SystemReserved contains resources reserved for OS system daemons and kernel memory. |  | MaxProperties: 10 <br />Optional: \{\} <br /> |
 | `kubeReserved` _object (keys:string, values:[KubeletQuantity](#kubeletquantity))_ | KubeReserved contains resources reserved for Kubernetes system components. |  | MaxProperties: 10 <br />Optional: \{\} <br /> |

@@ -88,6 +88,17 @@ func TestGCENodeClassCRDAllowsMaxParallelImagePullsOfOne(t *testing.T) {
 	require.Equal(t, float64(1), *field.Minimum, "maxParallelImagePulls must accept 1, the kubelet default")
 }
 
+func TestGCENodeClassCRDBoundsMaxPodsToGKELimit(t *testing.T) {
+	field := kubeletConfigurationSchema(t).Properties["maxPods"]
+
+	// GKE Standard supports up to 512 Pods per node (a /22 range); the CRD
+	// must reject anything the alias range cannot hold.
+	require.NotNil(t, field.Maximum, "maxPods must declare a maximum")
+	require.Equal(t, float64(512), *field.Maximum)
+	require.NotNil(t, field.Minimum)
+	require.Equal(t, float64(0), *field.Minimum, "maxPods keeps accepting 0")
+}
+
 func TestGCENodeClassCRDRestrictsParallelImagePullsAboveOne(t *testing.T) {
 	const rule = `!has(self.maxParallelImagePulls) || self.maxParallelImagePulls < 2 || ` +
 		`(has(self.serializeImagePulls) && self.serializeImagePulls == false)`
