@@ -4,6 +4,12 @@
 
 ## Unreleased
 
+### Default memory and CPU reservations follow the GKE 1.37.2+ formula
+
+New nodes whose selected bootstrap release is `1.37.2-gke.1325000` or later reserve memory as the lower of the earlier tiered reservation and `15 MiB × maxPods + BaseOverhead` (500 MiB on COS, 700 MiB on Ubuntu), and cap the CPU reservation at 1000m, matching GKE node pools. On a 16 GiB COS node with 110 pods the memory reservation falls from 2662 MiB to 2150 MiB, so nodes report more allocatable memory and workloads may pack onto fewer nodes. Existing nodes are unchanged until replaced. Node classes with the `Custom` image family keep the earlier formula.
+
+To keep the earlier values, set `spec.kubeletConfiguration.kubeReserved` `cpu` and `memory` explicitly. See [Default CPU and memory reservations](docs/examples/advanced.md#default-cpu-and-memory-reservations).
+
 ### Core node bootstrap follows the selected release, not the source pool
 
 **Upgrade CRDs before the controller**, using the separate `karpenter-crd` release or the project's CRD upgrade procedure. Helm does not upgrade CRDs from the controller chart's `crds/` directory. The additive `status.images[].kubernetesVersion` field must be preserved by the schema; otherwise, new launches keep waiting for complete image status. Allow normal NodeClass reconciliation to refresh old rows. Existing VM adoption remains available during that refresh or an artifact outage.

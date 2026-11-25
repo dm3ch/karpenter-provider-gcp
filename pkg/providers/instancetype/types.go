@@ -33,6 +33,7 @@ import (
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/apis/v1alpha1"
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/operator/options"
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/providers/disktype"
+	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/providers/imagefamily"
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/utils"
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/utils/localssd"
 )
@@ -57,7 +58,50 @@ func NewInstanceType(ctx context.Context, mt *computepb.MachineType, nodeClass *
 	return it
 }
 
+// reservationFormula selects how the default CPU and memory reservations are
+// computed. The zero value is the formula GKE applies before
+// utils.DensityAwareReservationMinRelease.
+type reservationFormula struct {
+	// densityBaseOverheadMiB, when positive, selects the formula GKE applies from
+	// utils.DensityAwareReservationMinRelease and is that formula's BaseOverhead
+	// for the node image family.
+	densityBaseOverheadMiB int64
+}
+
+// densityAwareBaseOverheadMiB returns the density-aware formula's BaseOverhead
+// for the node class, or 0 when no node it launches can use that formula: the
+// image family has no GKE counterpart, or no resolved image is on a qualifying
+// release. Custom images keep the earlier formula because the provider cannot
+// tell which operating system they run.
+func densityAwareBaseOverheadMiB(nodeClass *v1alpha1.GCENodeClass) int64 {
+	if !lo.SomeBy(nodeClass.Status.Images, func(image v1alpha1.Image) bool {
+		return utils.IsDensityAwareReservationRelease(image.KubernetesVersion)
+	}) {
+		return 0
+	}
+	switch nodeClass.ImageFamily() {
+	case v1alpha1.ImageFamilyContainerOptimizedOS:
+		return utils.COSBaseOverheadMiB
+	case v1alpha1.ImageFamilyUbuntu:
+		return utils.UbuntuBaseOverheadMiB
+	default:
+		return 0
+	}
+}
+
+// usesDensityAwareReservation reports whether a node launched on the image
+// selected for requirements reserves resources with the density-aware formula.
+// It selects the image as launch does, so the scheduler and the node agree.
+func usesDensityAwareReservation(images []v1alpha1.Image, requirements scheduling.Requirements) bool {
+	image, found := imagefamily.FindImage(images, requirements)
+	return found && utils.IsDensityAwareReservationRelease(image.KubernetesVersion)
+}
+
 func NewStaticInstanceType(ctx context.Context, mt *computepb.MachineType, nodeClass *v1alpha1.GCENodeClass, ssdCount int) *cloudprovider.InstanceType {
+	return newStaticInstanceType(ctx, mt, nodeClass, ssdCount, reservationFormula{})
+}
+
+func newStaticInstanceType(ctx context.Context, mt *computepb.MachineType, nodeClass *v1alpha1.GCENodeClass, ssdCount int, formula reservationFormula) *cloudprovider.InstanceType {
 	bootDiskSwap, err := ResolveBootDiskSwap(nodeClass, lo.FromPtr(mt.Name), int64(mt.GetMemoryMb()))
 	if err != nil {
 		// A machine whose boot disk or swap file cannot be resolved would
@@ -81,14 +125,28 @@ func NewStaticInstanceType(ctx context.Context, mt *computepb.MachineType, nodeC
 	}
 	totalStorageBytes := totalStorageGiB * 1024 * 1024 * 1024
 
-	reservedCPU, reservedMemory, evictionMemory, ephemeralEviction, ephemeralSystem := utils.ResolveReservedResource(
-		lo.FromPtr(mt.Name),
-		visibleCPUs(mt, nodeClass)*1000,
-		int64(mt.GetMemoryMb()),
-		bootDiskGiB,
-		kubeletEphemeralSSDGiB,
-		int64(kubeletEphemeralSSDCount),
-	)
+	var reservedCPU, reservedMemory, evictionMemory, ephemeralEviction, ephemeralSystem int64
+	if formula.densityBaseOverheadMiB > 0 {
+		reservedCPU, reservedMemory, evictionMemory, ephemeralEviction, ephemeralSystem = utils.ResolveDensityAwareReservedResource(
+			lo.FromPtr(mt.Name),
+			visibleCPUs(mt, nodeClass)*1000,
+			int64(mt.GetMemoryMb()),
+			int64(nodeClass.GetMaxPods()),
+			formula.densityBaseOverheadMiB,
+			bootDiskGiB,
+			kubeletEphemeralSSDGiB,
+			int64(kubeletEphemeralSSDCount),
+		)
+	} else {
+		reservedCPU, reservedMemory, evictionMemory, ephemeralEviction, ephemeralSystem = utils.ResolveReservedResource(
+			lo.FromPtr(mt.Name),
+			visibleCPUs(mt, nodeClass)*1000,
+			int64(mt.GetMemoryMb()),
+			bootDiskGiB,
+			kubeletEphemeralSSDGiB,
+			int64(kubeletEphemeralSSDCount),
+		)
+	}
 	// A boot-disk swap file occupies the boot disk before the kubelet counts
 	// ephemeral storage, so the baseline reservation is resolved against the
 	// remaining disk; the eviction threshold stays on the whole disk. The swap
