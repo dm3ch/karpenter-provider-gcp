@@ -23,6 +23,14 @@ GKE assigns the pool a pod range when the pool is created. If the cluster carrie
 
 Cluster deletion protection is configurable; the system pool has no hard-coded destruction guard.
 
+## Cluster version and node creation
+
+`min_master_version` sets a minimum control plane version, such as `1.37` or `1.37.1-gke.1552000`. It is a floor, not a pin: GKE keeps auto-upgrading within `release_channel`. Creating or updating the cluster fails if the channel does not offer that version. Leave it unset to let the channel choose. Raising it on an existing cluster upgrades the control plane on the next apply.
+
+`node_creation_mode` selects how GKE creates `Node` objects: `VIA_KUBELET` (the kubelet registers the node) or `VIA_CONTROL_PLANE` (GKE creates the `Node`). It requires GKE `1.35.3-gke.1189000` or later and affects only nodes created after the change. Leave it unset to keep the GKE default. Karpenter nodes don't register on `VIA_CONTROL_PLANE` clusters yet, so set `VIA_KUBELET` on clusters that run Karpenter; see [Troubleshooting](../../docs/troubleshooting.md#nodeclaims-never-register-on-control-plane-node-creation-clusters).
+
+The module requires the `hashicorp/google` provider `7.46.2`.
+
 ## Observability
 
 `cloud_observability_enabled` (default `false`) controls GKE-managed Cloud Logging and Cloud Monitoring components and managed Prometheus. When disabled the cluster reports no logs or metrics and the managed Prometheus operator is not deployed; enable it, or run your own stack, when the deployment needs cluster telemetry. GKE addons keep their platform defaults.

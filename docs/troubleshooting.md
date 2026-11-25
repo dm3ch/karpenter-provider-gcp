@@ -40,6 +40,28 @@ kubectl describe node <karpenter-node-name>
 
 If the node never becomes `Ready`, check kubelet logs on the instance (via serial port or SSH if the node has a public IP or IAP access is configured).
 
+### NodeClaims never register on control plane node creation clusters
+
+The VM starts and the kubelet runs, but no `Node` appears. After 15 minutes, Karpenter deletes the NodeClaim and launches a replacement, so VMs churn while pods stay `Pending`.
+
+This happens when the cluster uses [control plane node creation](https://docs.cloud.google.com/kubernetes-engine/security/control-plane-node-creation) (`VIA_CONTROL_PLANE`). In that mode GKE rejects kubelet node registration, and Karpenter does not create the `Node` itself yet. GKE release notes make this mode the default for clusters created on `1.37.0-gke.2100000` and later.
+
+Check the cluster's mode:
+
+```sh
+gcloud container clusters describe <cluster> --location=<location> \
+  --format='value(nodeCreationConfig.nodeCreationMode)'
+```
+
+If it prints `VIA_CONTROL_PLANE`, switch the cluster to kubelet registration:
+
+```sh
+gcloud container clusters update <cluster> --location=<location> \
+  --node-creation-mode=KUBELET
+```
+
+The change applies only to nodes created afterwards. Karpenter replaces the unregistered NodeClaims on its own. If you manage the cluster with the [Terraform module](https://github.com/karpenter-gcp/karpenter-provider-gcp/tree/main/deploy/terraform), set `node_creation_mode = "VIA_KUBELET"` instead.
+
 ### Registered Node has no PodCIDR
 
 If a registered Node is `NotReady` with `NetworkPluginNotReady`, check whether `spec.podCIDR` is populated. Repeated `CIDRNotAvailable` Events from `cidrAllocator` point to Pod CIDR assignment rather than a VM creation failure:
