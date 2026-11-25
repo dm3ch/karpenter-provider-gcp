@@ -104,6 +104,8 @@ When `kubeReserved` does not set `cpu` or `memory`, Karpenter reserves what GKE 
 
 `BaseOverhead` is 500 MiB for `ContainerOptimizedOS` and 700 MiB for `Ubuntu`, and `maxPods` is `kubeletConfiguration.maxPods` (default 110). Node classes with the `Custom` image family, such as raw image IDs without `spec.imageFamily`, keep the earlier formula. The release is chosen per instance type from the same image the node launches with, so the scheduler's allocatable estimate matches the node's kubelet reservation. See [GKE node sizing](https://docs.cloud.google.com/kubernetes-engine/docs/concepts/plan-node-sizes#memory_and_cpu_reservations).
 
+`kubeletConfiguration.kubeReserved` `cpu` and `memory` are the equivalent of GKE's [`reservedResourcesConfig`](https://docs.cloud.google.com/kubernetes-engine/docs/how-to/node-system-config#system-resource-reservations) (`memoryReservedMib`, `cpuReservedMillicore`), so there is no separate field for it. They replace the default for the key they set. Unlike GKE, Karpenter does not require the value to be at least the default or below 50% of node capacity. GKE's documentation does not say whether `memoryReservedMib` includes the 100 MiB eviction threshold, which Karpenter models separately from `kubeReserved`; confirm the effective allocatable on a node before copying a GKE value.
+
 When you set a partial `kubeReserved` (for example, only `cpu`), Karpenter preserves provider-computed defaults for unspecified keys like `ephemeral-storage` based on boot disk size.
 
 ### Eviction thresholds
