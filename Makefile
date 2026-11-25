@@ -9,7 +9,6 @@ CLUSTER_ENDPOINT ?= $(shell kubectl config view --minify -o jsonpath='{.clusters
 # CR for local builds of Karpenter
 KARPENTER_NAMESPACE ?= karpenter-system
 KARPENTER_VERSION ?= $(shell git tag --sort=committerdate | tail -1 | cut -d"v" -f2)
-# KO_DOCKER_REPO ?= ${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_DEFAULT_REGION}.amazonaws.com/dev
 KO_DOCKER_REPO ?= ko.local
 KOCACHE ?= ~/.ko
 
@@ -42,7 +41,6 @@ run: ## Run Karpenter controller binary against your local cluster
 		CLUSTER_NAME=${CLUSTER_NAME} \
 		PROJECT_ID=${PROJECT_ID} \
 		CLUSTER_LOCATION=${REGION} \
-		INTERRUPTION_QUEUE=${CLUSTER_NAME} \
 		FEATURE_GATES="SpotToSpotConsolidation=true,NodeOverlay=true" \
 		go run ./cmd/controller/main.go
 
