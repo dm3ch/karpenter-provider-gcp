@@ -112,7 +112,8 @@ VULNCHECK_FLAGS ?=
 vulncheck: ## Check reachable controller and unit-test vulnerabilities
 	@$(GOVULNCHECK) -test $(VULNCHECK_FLAGS) ./cmd/controller/... ./pkg/...
 
-# CNCF license names; keep in sync with allow-licenses in .github/workflows/security.yaml.
+# CNCF license names; keep in sync with allow-licenses in .github/workflows/security.yaml,
+# except the Google patent license LicenseRef there, which go-licenses never reports.
 # Other conditions still require review: https://github.com/cncf/foundation/blob/main/policies-guidance/allowed-third-party-license-policy.md
 CNCF_ALLOWED_LICENSES := Apache-2.0,0BSD,BSD-2-Clause,BSD-2-Clause-FreeBSD,BSD-3-Clause,MIT,MIT-0,ISC,OpenSSL,OpenSSL-standalone,PSF-2.0,Python-2.0,Python-2.0.1,PostgreSQL,SSLeay-standalone,UPL-1.0,X11,Zlib
 
