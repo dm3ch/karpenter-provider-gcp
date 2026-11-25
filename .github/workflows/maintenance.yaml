@@ -32,7 +32,7 @@ jobs:
           submodules: true
           persist-credentials: false
 
-      - uses: actions/setup-go@v7.0.0
+      - uses: actions/setup-go@v7.1.0
         with:
           go-version-file: go.mod
           cache: false
@@ -52,7 +52,7 @@ jobs:
 
       - name: Create PR if pricing changed
         if: github.event_name == 'schedule' || !inputs.dry_run
-        uses: peter-evans/create-pull-request@v8.1.2
+        uses: peter-evans/create-pull-request@v8.1.3
         with:
           token: ${{ github.token }}
           draft: true
@@ -117,7 +117,7 @@ jobs:
       # Actions PR creation must be permitted; bot-created workflow runs need maintainer approval.
       - name: Open draft update PR
         if: github.event_name == 'schedule' || !inputs.dry_run
-        uses: peter-evans/create-pull-request@v8.1.2
+        uses: peter-evans/create-pull-request@v8.1.3
         with:
           token: ${{ github.token }}
           branch: automated/security-pins
