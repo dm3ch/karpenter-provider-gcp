@@ -108,6 +108,10 @@ type DefaultProvider struct {
 type staticInstanceType struct {
 	machineType  *computepb.MachineType
 	instanceType *cloudprovider.InstanceType
+	// densityAware is the instance type with the density-aware reservation
+	// formula, used for nodes whose image selects a release at or after
+	// utils.DensityAwareReservationMinRelease. It is nil when no image does.
+	densityAware *cloudprovider.InstanceType
 	ssdCount     int
 	gpuSharing   *v1alpha1.GPUSharingConfig
 }
@@ -169,7 +173,7 @@ func (p *DefaultProvider) List(ctx context.Context, nodeClass *v1alpha1.GCENodeC
 		return nil, err
 	}
 
-	return p.injectOfferings(ctx, staticInstanceTypes, zones), nil
+	return p.injectOfferings(ctx, staticInstanceTypes, zones, nodeClass.Status.Images), nil
 }
 
 func (p *DefaultProvider) getStaticInstanceTypes(ctx context.Context, nodeClass *v1alpha1.GCENodeClass) ([]staticInstanceType, error) {
@@ -185,7 +189,11 @@ func (p *DefaultProvider) getStaticInstanceTypes(ctx context.Context, nodeClass 
 	// automatic size depends on each machine's memory, so the configuration
 	// rather than one resolved size identifies the cached shapes.
 	swapHash, _ := hashstructure.Hash(nodeClass.BootDiskSwapConfig(), hashstructure.FormatV2, nil)
-	key := fmt.Sprintf("%d-%d-%d-%s-%d-%d-%d", atomic.LoadUint64(&p.instanceTypesSeqNum), kcHash, disksHash, nodeClass.Spec.LocalSsdMode, gpuSharingHash, threadsPerCore, swapHash)
+	// The release of the selected image decides which reservation formula a node
+	// uses, and the image family decides that formula's base overhead, so both
+	// identify the cached shapes. Zero keeps the earlier formula for every type.
+	densityBase := densityAwareBaseOverheadMiB(nodeClass)
+	key := fmt.Sprintf("%d-%d-%d-%s-%d-%d-%d-%d", atomic.LoadUint64(&p.instanceTypesSeqNum), kcHash, disksHash, nodeClass.Spec.LocalSsdMode, gpuSharingHash, threadsPerCore, swapHash, densityBase)
 
 	if item, ok := p.staticInstanceTypesCache.Get(key); ok {
 		return item.([]staticInstanceType), nil
@@ -206,18 +214,31 @@ func (p *DefaultProvider) getStaticInstanceTypes(ctx context.Context, nodeClass 
 		}
 
 		for _, ssdCount := range ssdCountVariants(mt) {
-			it := NewStaticInstanceType(ctx, mt, nodeClass, ssdCount)
-			if it == nil {
-				continue
+			if static, ok := newStaticInstanceTypeVariants(ctx, mt, nodeClass, ssdCount, densityBase); ok {
+				instanceTypes = append(instanceTypes, static)
 			}
-			instanceTypes = append(instanceTypes, staticInstanceType{machineType: mt, instanceType: it, ssdCount: ssdCount, gpuSharing: nodeClass.Spec.GPUSharingConfig})
 		}
 	}
 	p.staticInstanceTypesCache.SetDefault(key, instanceTypes)
 	return instanceTypes, nil
 }
 
-func (p *DefaultProvider) injectOfferings(ctx context.Context, staticInstanceTypes []staticInstanceType, zones []string) []*cloudprovider.InstanceType {
+// newStaticInstanceTypeVariants builds the cached shapes of one machine type:
+// the earlier reservation formula and, when densityBase is positive, the
+// density-aware one. It reports false for a machine the node class cannot use.
+func newStaticInstanceTypeVariants(ctx context.Context, mt *computepb.MachineType, nodeClass *v1alpha1.GCENodeClass, ssdCount int, densityBase int64) (staticInstanceType, bool) {
+	it := NewStaticInstanceType(ctx, mt, nodeClass, ssdCount)
+	if it == nil {
+		return staticInstanceType{}, false
+	}
+	static := staticInstanceType{machineType: mt, instanceType: it, ssdCount: ssdCount, gpuSharing: nodeClass.Spec.GPUSharingConfig}
+	if densityBase > 0 {
+		static.densityAware = newStaticInstanceType(ctx, mt, nodeClass, ssdCount, reservationFormula{densityBaseOverheadMiB: densityBase})
+	}
+	return static, true
+}
+
+func (p *DefaultProvider) injectOfferings(ctx context.Context, staticInstanceTypes []staticInstanceType, zones []string, images []v1alpha1.Image) []*cloudprovider.InstanceType {
 	instanceTypes := []*cloudprovider.InstanceType{}
 	for _, cached := range staticInstanceTypes {
 		instanceType := cached.instanceType.Name
@@ -227,9 +248,14 @@ func (p *DefaultProvider) injectOfferings(ctx context.Context, staticInstanceTyp
 			continue
 		}
 
-		it := cached.instanceType.DeepCopy()
+		requirements := computeRequirements(cached.machineType, offerings, p.authOptions.Region, cached.ssdCount, cached.gpuSharing)
+		static := cached.instanceType
+		if cached.densityAware != nil && usesDensityAwareReservation(images, requirements) {
+			static = cached.densityAware
+		}
+		it := static.DeepCopy()
 		it.Offerings = offerings
-		it.Requirements = computeRequirements(cached.machineType, offerings, p.authOptions.Region, cached.ssdCount, cached.gpuSharing)
+		it.Requirements = requirements
 		instanceTypes = append(instanceTypes, it)
 	}
 	return instanceTypes

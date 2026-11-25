@@ -111,13 +111,16 @@ func ResolveReservedMemoryMiB(instanceType string, memoryMiB int64) int64 {
 	return memory
 }
 
+func isSharedCoreE2(instanceType string) bool {
+	return instanceType == "e2-micro" ||
+		instanceType == "e2-small" ||
+		instanceType == "e2-medium"
+}
+
 func ResolveReservedCPUMCore(instanceType string, cpuMCore int64) int64 {
 	cpu := int64(0)
 
-	isSharedE2 := instanceType == "e2-micro" ||
-		instanceType == "e2-small" ||
-		instanceType == "e2-medium"
-	if isSharedE2 {
+	if isSharedCoreE2(instanceType) {
 		// For shared-core E2 machine types, GKE reserves a total of 1060 millicores.
 		return 1060
 	} else {
