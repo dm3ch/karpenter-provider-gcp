@@ -115,14 +115,10 @@ func (p *DefaultProvider) List(ctx context.Context, nodeClass *v1alpha1.GCENodeC
 	if err != nil {
 		return nil, err
 	}
-	// The boot disk size selects between images with different minimum disk sizes, so it is part
-	// of the cache key.
-	bootDiskGiB := smallestBootDiskGiB(nodeClass)
-	cacheKey := fmt.Sprintf("%d|%d", hash, bootDiskGiB)
+	cacheKey := fmt.Sprintf("%d", hash)
 	if images, ok := p.cache.Get(cacheKey); ok {
 		return images.(Images), nil
 	}
-	ctx = withBootDiskGiB(ctx, bootDiskGiB)
 
 	var result Images
 	var masterVersion string
@@ -142,33 +138,6 @@ func (p *DefaultProvider) List(ctx context.Context, nodeClass *v1alpha1.GCENodeC
 		p.cache.SetDefault(cacheKey, result)
 	}
 	return result, nil
-}
-
-type bootDiskGiBKey struct{}
-
-// withBootDiskGiB tells image families the smallest explicit boot disk of the NodeClass in GiB (0
-// when none is set), so they can avoid an image the disk cannot hold.
-func withBootDiskGiB(ctx context.Context, gib int64) context.Context {
-	return context.WithValue(ctx, bootDiskGiBKey{}, gib)
-}
-
-// bootDiskGiB returns the NodeClass boot disk size from ctx, or 0 when unknown or unset.
-func bootDiskGiB(ctx context.Context) int64 {
-	gib, _ := ctx.Value(bootDiskGiBKey{}).(int64)
-	return gib
-}
-
-// smallestBootDiskGiB returns the smallest explicit boot disk size of the NodeClass in GiB, or 0
-// when it sets none (GCE then sizes the disk from the image, and the provider default is larger
-// than any Ubuntu image).
-func smallestBootDiskGiB(nodeClass *v1alpha1.GCENodeClass) int64 {
-	var smallest int64
-	for _, disk := range nodeClass.Spec.Disks {
-		if disk.Boot && disk.SizeGiB > 0 && (smallest == 0 || int64(disk.SizeGiB) < smallest) {
-			smallest = int64(disk.SizeGiB)
-		}
-	}
-	return smallest
 }
 
 func (p *DefaultProvider) resolveImageFromTerm(ctx context.Context, term v1alpha1.ImageSelectorTerm) (Images, error) {

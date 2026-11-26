@@ -1124,56 +1124,6 @@ func TestResolveImages_Ubuntu_CachedPerPatchImageDeleted(t *testing.T) {
 	require.Equal(t, []string{newProject + plainAMD64, newProject + plainARM64}, imageSources(got))
 }
 
-// TestResolveImages_Ubuntu_PerPatchNeedsBootDiskRoom protects boot disks sized for the plain image:
-// the per-patch image is larger, GCE rejects a smaller disk, so such NodeClasses keep the plain
-// image, and the choice does not leak through the resolution cache to other NodeClasses.
-func TestResolveImages_Ubuntu_PerPatchNeedsBootDiskRoom(t *testing.T) {
-	const master = "v1.36.4-gke.2046003"
-	patchAMD64Image := img(patchAMD64, "2026-11-09T10:00:00.000-08:00")
-	patchARM64Image := img(patchARM64, "2026-11-09T10:00:05.000-08:00")
-	patchAMD64Image.DiskSizeGb, patchARM64Image.DiskSizeGb = 12, 12
-	catalog := &perPatchCatalog{pages: [][]*compute.Image{{
-		img(plainARM64, "2026-11-17T19:12:00.000-08:00"), img(plainAMD64, "2026-11-17T19:05:00.000-08:00"),
-		patchARM64Image, patchAMD64Image,
-	}}}
-	patch := []string{newProject + patchAMD64, newProject + patchARM64}
-	plain := []string{newProject + plainAMD64, newProject + plainARM64}
-
-	u := perPatchUbuntu(t, catalog, master)
-	for _, tt := range []struct {
-		bootGiB int64
-		want    []string
-	}{{0, patch}, {10, plain}, {11, plain}, {12, patch}, {100, patch}} {
-		got, err := u.ResolveImages(withBootDiskGiB(context.Background(), tt.bootGiB), "latest")
-		require.NoError(t, err)
-		require.Equal(t, tt.want, imageSources(got), "boot disk %d GiB", tt.bootGiB)
-	}
-
-	// Through List: NodeClasses that differ only in boot disk size must not share a cached result.
-	srv := catalog.server(t)
-	provider := NewDefaultProvider(buildComputeService(t, srv), &fakeVersionProvider{version: master}, &stubGKEProvider{})
-	nodeClass := func(sizeGiB int32) *v1alpha1.GCENodeClass {
-		nc := &v1alpha1.GCENodeClass{Spec: v1alpha1.GCENodeClassSpec{
-			ImageSelectorTerms: []v1alpha1.ImageSelectorTerm{{Family: v1alpha1.ImageFamilyUbuntu, OSVersion: "24.04", Version: "latest"}},
-		}}
-		if sizeGiB > 0 {
-			nc.Spec.Disks = []v1alpha1.Disk{{Boot: true, SizeGiB: sizeGiB}, {SizeGiB: 8}}
-		}
-		return nc
-	}
-	for _, tt := range []struct {
-		sizeGiB int32
-		want    []string
-	}{{0, patch}, {11, plain}, {12, patch}} {
-		got, err := provider.List(context.Background(), nodeClass(tt.sizeGiB))
-		require.NoError(t, err)
-		require.Equal(t, tt.want, imageSources(got), "boot disk %d GiB", tt.sizeGiB)
-	}
-	require.Equal(t, int64(0), smallestBootDiskGiB(&v1alpha1.GCENodeClass{Spec: v1alpha1.GCENodeClassSpec{
-		Disks: []v1alpha1.Disk{{SizeGiB: 8}, {Boot: true}},
-	}}), "only boot disks with an explicit size count")
-}
-
 // TestSameImage_UbuntuBuild protects drift across packaging: the plain and the per-patch image of
 // one OS build, in either Ubuntu project, are the same image, while a different base date, release,
 // architecture or image minor is not.

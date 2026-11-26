@@ -224,21 +224,16 @@ func (u *Ubuntu) ResolveImages(ctx context.Context, version string) (Images, err
 		return Images{}, err
 	}
 
-	return u.imagesFor(plain, perPatch, project, kubernetesVersion, version, bootDiskGiB(ctx))
+	return u.imagesFor(plain, perPatch, project, kubernetesVersion, version)
 }
 
-// imagesFor picks the image for each architecture, the per-patch one when there is one and the
-// NodeClass boot disk (bootGiB, 0 when unset) can hold it: GCE rejects a disk smaller than the
-// image, and the per-patch image is larger than the plain one. A missing architecture (including a
-// pinned date absent for one arch) fails resolution instead of producing a single-arch set that
-// reads as ImagesReady=True.
-func (u *Ubuntu) imagesFor(plain, perPatch map[string]*compute.Image, project, kubernetesVersion, version string, bootGiB int64) (Images, error) {
+// imagesFor picks the image for each architecture, the per-patch one when there is one. A missing
+// architecture (including a pinned date absent for one arch) fails resolution instead of producing
+// a single-arch set that reads as ImagesReady=True.
+func (u *Ubuntu) imagesFor(plain, perPatch map[string]*compute.Image, project, kubernetesVersion, version string) (Images, error) {
 	ret := Images{}
 	for _, arch := range ubuntuArchitectures {
 		img, ok := perPatch[arch]
-		if ok && bootGiB > 0 && img.DiskSizeGb > bootGiB {
-			ok = false
-		}
 		if !ok {
 			img, ok = plain[arch]
 		}
