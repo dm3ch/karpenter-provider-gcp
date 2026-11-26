@@ -645,7 +645,8 @@ type AdvancedMachineFeatures struct {
 	ThreadsPerCore *int32 `json:"threadsPerCore,omitempty"`
 }
 
-// GCENodeClass is the Schema for the GCENodeClass API
+// GCENodeClass defines GCP-specific node configuration (image, disks, network, labels,
+// kubelet and metadata settings) applied to the GCE instances Karpenter launches.
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
 // +kubebuilder:resource:path=gcenodeclasses,scope=Cluster,categories=karpenter,shortName={gcenc,gcencs}
 // +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status",description=""

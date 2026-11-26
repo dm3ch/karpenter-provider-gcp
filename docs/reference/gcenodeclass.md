@@ -91,8 +91,9 @@ _Appears in:_
 
 
 GCECustomMachineType registers a GCE custom machine type so the instance type provider can
-discover it, price it, and make it available for scheduling like any predefined shape. See
-proposals/0009-custom-machine-type-catalog.md.
+discover it, price it, and make it available for scheduling like any predefined shape.
+
+See proposals/0009-custom-machine-type-catalog.md.
 
 
 
@@ -172,7 +173,8 @@ _Appears in:_
 
 
 
-GCENodeClass is the Schema for the GCENodeClass API
+GCENodeClass defines GCP-specific node configuration (image, disks, network, labels,
+kubelet and metadata settings) applied to the GCE instances Karpenter launches.
 
 
 

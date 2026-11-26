@@ -37,8 +37,9 @@ spec:
       openAPIV3Schema:
         description: |-
           GCECustomMachineType registers a GCE custom machine type so the instance type provider can
-          discover it, price it, and make it available for scheduling like any predefined shape. See
-          proposals/0009-custom-machine-type-catalog.md.
+          discover it, price it, and make it available for scheduling like any predefined shape.
+
+          See proposals/0009-custom-machine-type-catalog.md.
         properties:
           apiVersion:
             description: |-

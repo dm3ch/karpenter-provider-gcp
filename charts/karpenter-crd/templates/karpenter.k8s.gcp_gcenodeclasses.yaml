@@ -32,7 +32,9 @@ spec:
     name: v1alpha1
     schema:
       openAPIV3Schema:
-        description: GCENodeClass is the Schema for the GCENodeClass API
+        description: |-
+          GCENodeClass defines GCP-specific node configuration (image, disks, network, labels,
+          kubelet and metadata settings) applied to the GCE instances Karpenter launches.
         properties:
           apiVersion:
             description: |-

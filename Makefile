@@ -48,6 +48,7 @@ update: tidy download ## Update go files header, CRD and generated code
 	$(MAKE) update-pdcsi-compatibility
 	hack/boilerplate.sh
 	hack/update-generated.sh
+	go run ./hack/artifacthub
 	hack/docs-generate.sh
 	helm-docs -c charts/karpenter
 	helm-docs -c charts/karpenter-crd
