@@ -106,6 +106,7 @@ Secondary interfaces inherit the `enablePrivateNodes` setting from the top level
 | `networkTags`                                            | Instance (all interfaces) | GCP firewall rule targets                  |
 | `networkConfig.subnetwork`                               | Primary interface         | Which subnetwork to attach                 |
 | `networkConfig.enablePrivateNodes`                       | All interfaces            | Whether to assign an external IPv4 address |
+| `networkConfig.canIpForward`                             | All interfaces            | Whether to enable IP forwarding            |
 | `networkConfig.additionalNetworkInterfaces[].network`    | Per secondary interface   | Which VPC network to attach                |
 | `networkConfig.additionalNetworkInterfaces[].subnetwork` | Per secondary interface   | Which subnetwork to attach                 |
 | `subnetRangeName` / `subnetRangeNames`                   | Primary interface         | Secondary IP range(s) for pod IPs          |
