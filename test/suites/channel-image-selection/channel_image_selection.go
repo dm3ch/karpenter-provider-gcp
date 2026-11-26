@@ -19,7 +19,6 @@ package channelimageselection
 import (
 	"context"
 	"fmt"
-	"regexp"
 	"strings"
 	"time"
 
@@ -172,24 +171,26 @@ func expectResolvedImage(ctx context.Context, tc familyChannelTestCase, sourceIm
 			tc.channel, expectedGKEVersion, expectedSubstr, sourceImages[0])
 	case tc.version == "latest" && tc.osVersion == "26.04":
 		// A fixed 26.04 selection must resolve the newest clean 26.04 image for the cluster's minor.
-		expectUbuntuImage(sourceImages[0], "2604", env.ResolveUbuntuVersion(ctx, "2604"))
+		expectUbuntuImage(ctx, sourceImages[0], "2604", env.ResolveUbuntuVersion(ctx, "2604"))
 	case tc.version == "latest" && (tc.family == gcpv1alpha1.ImageFamilyUbuntu2404 || tc.osVersion == "24.04" || tc.osVersion == gcpv1alpha1.ImageOSVersionDefault ||
 		(tc.family == gcpv1alpha1.ImageFamilyUbuntu && tc.osVersion == "")):
 		// For version: latest, the resolved image must embed the independently-queried Ubuntu 24.04 version.
-		expectUbuntuImage(sourceImages[0], "2404", env.ResolveCurrentUbuntuVersion(ctx))
+		expectUbuntuImage(ctx, sourceImages[0], "2404", env.ResolveCurrentUbuntuVersion(ctx))
 	}
 }
 
 // expectUbuntuImage checks that a resolved Ubuntu image is what `latest` selects for a release: the
-// per-patch image GKE publishes for the cluster master's exact version (GKE 1.36 and later, whose
-// base build follows GKE's patch cadence), or otherwise the newest plain image.
-func expectUbuntuImage(image, release, newestPlainVersion string) {
-	perPatch := regexp.MustCompile(`/gke-\d+-gke\d+-ubuntu-` + release + `-\d+-\d+-(amd64|arm64)-v\d{8}[a-z]?-c-pre$`)
-	if perPatch.MatchString(image) {
+// per-patch image GKE publishes for the cluster master's exact version when there is one (GKE 1.36
+// and later; its base build follows GKE's patch cadence), otherwise the newest plain image. Both
+// expectations are looked up independently of the controller.
+func expectUbuntuImage(ctx context.Context, image, release, newestPlainVersion string) {
+	if perPatch := env.ResolveUbuntuPerPatchImage(ctx, release); perPatch != "" {
+		Expect(image).To(HaveSuffix("/"+perPatch),
+			"GKE publishes per-patch image %s for the cluster's exact version, but %s was selected", perPatch, image)
 		return
 	}
 	Expect(image).To(ContainSubstring("ubuntu-gke-"+release+"-"),
-		"resolved image is neither a per-patch nor a plain Ubuntu %s image: %s", release, image)
+		"no per-patch image exists for the cluster's version, so a plain Ubuntu %s image is expected: %s", release, image)
 	Expect(image).To(ContainSubstring(newestPlainVersion),
 		"resolved plain Ubuntu %s image does not contain the newest version %s", release, newestPlainVersion)
 }

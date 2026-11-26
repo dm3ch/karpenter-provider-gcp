@@ -23,6 +23,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -884,13 +885,35 @@ func TestListUbuntuOSVersionDefault(t *testing.T) {
 // descending, and records every request so tests can assert how the catalog was read.
 type perPatchCatalog struct {
 	pages    [][]*compute.Image
-	failPage int // 1-based page index that returns an error; 0 for none
-	requests []url.Values
+	failPage int          // 1-based page index that returns an error; 0 for none
+	requests []url.Values // list calls
+	gets     []string     // names of single-image lookups
+}
+
+// remove deletes an image from the catalog, as Google deleting a published image does.
+func (c *perPatchCatalog) remove(name string) {
+	for i, page := range c.pages {
+		c.pages[i] = slices.DeleteFunc(page, func(img *compute.Image) bool { return img.Name == name })
+	}
 }
 
 func (c *perPatchCatalog) server(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, name, ok := strings.Cut(r.URL.Path, "/global/images/"); ok && name != "" {
+			c.gets = append(c.gets, name)
+			for _, page := range c.pages {
+				for _, image := range readyTestImages(page) {
+					if image.Name == name {
+						w.Header().Set("Content-Type", "application/json")
+						_ = json.NewEncoder(w).Encode(image)
+						return
+					}
+				}
+			}
+			http.Error(w, "image not found", http.StatusNotFound)
+			return
+		}
 		c.requests = append(c.requests, r.URL.Query())
 		page := 0
 		if token := r.URL.Query().Get("pageToken"); token != "" {
@@ -1065,13 +1088,90 @@ func TestResolveImages_Ubuntu_PerPatchCatalogReads(t *testing.T) {
 	second, err := u.ResolveImages(context.Background(), "latest")
 	require.NoError(t, err)
 	require.Equal(t, imageSources(first), imageSources(second))
-	require.Equal(t, 1, len(hit.requests)-before, "the cached per-patch lookup must not read the catalog again")
+	require.Equal(t, 1, len(hit.requests)-before, "the cached per-patch lookup must not scan the catalog again, only recheck the cached images")
+	require.ElementsMatch(t, []string{patchAMD64, patchARM64}, hit.gets)
 
-	// A failing deeper page must not fail provisioning.
+	// A failing deeper page fails resolution: quietly using the plain image, whose base build can be
+	// newer, would drift running nodes. The NodeClass keeps its previous images and retries.
 	failing := &perPatchCatalog{pages: [][]*compute.Image{plain, filler(1), filler(2)}, failPage: 2}
-	got, err = perPatchUbuntu(t, failing, master).ResolveImages(context.Background(), "latest")
+	_, err = perPatchUbuntu(t, failing, master).ResolveImages(context.Background(), "latest")
+	require.ErrorContains(t, err, "listing per-patch Ubuntu GKE images")
+}
+
+// TestResolveImages_Ubuntu_CachedPerPatchImageDeleted protects against a cached per-patch image
+// that Google deleted or deprecated: it must not stay selected for the cache lifetime.
+func TestResolveImages_Ubuntu_CachedPerPatchImageDeleted(t *testing.T) {
+	const master = "v1.36.4-gke.2046003"
+	catalog := &perPatchCatalog{pages: [][]*compute.Image{{
+		img(plainARM64, "2026-11-17T19:12:00.000-08:00"), img(plainAMD64, "2026-11-17T19:05:00.000-08:00"),
+		img(patchARM64, "2026-11-09T10:00:05.000-08:00"), img(patchAMD64, "2026-11-09T10:00:00.000-08:00"),
+	}}}
+	u := perPatchUbuntu(t, catalog, master)
+	got, err := u.ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, []string{newProject + patchAMD64, newProject + patchARM64}, imageSources(got))
+
+	catalog.remove(patchAMD64)
+	got, err = u.ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, []string{newProject + plainAMD64, newProject + patchARM64}, imageSources(got),
+		"the deleted image is replaced by the plain image, the other architecture keeps its per-patch image")
+
+	// A deprecated image is treated the same way.
+	catalog.pages[0][2].Deprecated = &compute.DeprecationStatus{State: "DEPRECATED"} // patchARM64
+	got, err = u.ResolveImages(context.Background(), "latest")
 	require.NoError(t, err)
 	require.Equal(t, []string{newProject + plainAMD64, newProject + plainARM64}, imageSources(got))
+}
+
+// TestResolveImages_Ubuntu_PerPatchNeedsBootDiskRoom protects boot disks sized for the plain image:
+// the per-patch image is larger, GCE rejects a smaller disk, so such NodeClasses keep the plain
+// image, and the choice does not leak through the resolution cache to other NodeClasses.
+func TestResolveImages_Ubuntu_PerPatchNeedsBootDiskRoom(t *testing.T) {
+	const master = "v1.36.4-gke.2046003"
+	patchAMD64Image := img(patchAMD64, "2026-11-09T10:00:00.000-08:00")
+	patchARM64Image := img(patchARM64, "2026-11-09T10:00:05.000-08:00")
+	patchAMD64Image.DiskSizeGb, patchARM64Image.DiskSizeGb = 12, 12
+	catalog := &perPatchCatalog{pages: [][]*compute.Image{{
+		img(plainARM64, "2026-11-17T19:12:00.000-08:00"), img(plainAMD64, "2026-11-17T19:05:00.000-08:00"),
+		patchARM64Image, patchAMD64Image,
+	}}}
+	patch := []string{newProject + patchAMD64, newProject + patchARM64}
+	plain := []string{newProject + plainAMD64, newProject + plainARM64}
+
+	u := perPatchUbuntu(t, catalog, master)
+	for _, tt := range []struct {
+		bootGiB int64
+		want    []string
+	}{{0, patch}, {10, plain}, {11, plain}, {12, patch}, {100, patch}} {
+		got, err := u.ResolveImages(withBootDiskGiB(context.Background(), tt.bootGiB), "latest")
+		require.NoError(t, err)
+		require.Equal(t, tt.want, imageSources(got), "boot disk %d GiB", tt.bootGiB)
+	}
+
+	// Through List: NodeClasses that differ only in boot disk size must not share a cached result.
+	srv := catalog.server(t)
+	provider := NewDefaultProvider(buildComputeService(t, srv), &fakeVersionProvider{version: master}, &stubGKEProvider{})
+	nodeClass := func(sizeGiB int32) *v1alpha1.GCENodeClass {
+		nc := &v1alpha1.GCENodeClass{Spec: v1alpha1.GCENodeClassSpec{
+			ImageSelectorTerms: []v1alpha1.ImageSelectorTerm{{Family: v1alpha1.ImageFamilyUbuntu, OSVersion: "24.04", Version: "latest"}},
+		}}
+		if sizeGiB > 0 {
+			nc.Spec.Disks = []v1alpha1.Disk{{Boot: true, SizeGiB: sizeGiB}, {SizeGiB: 8}}
+		}
+		return nc
+	}
+	for _, tt := range []struct {
+		sizeGiB int32
+		want    []string
+	}{{0, patch}, {11, plain}, {12, patch}} {
+		got, err := provider.List(context.Background(), nodeClass(tt.sizeGiB))
+		require.NoError(t, err)
+		require.Equal(t, tt.want, imageSources(got), "boot disk %d GiB", tt.sizeGiB)
+	}
+	require.Equal(t, int64(0), smallestBootDiskGiB(&v1alpha1.GCENodeClass{Spec: v1alpha1.GCENodeClassSpec{
+		Disks: []v1alpha1.Disk{{SizeGiB: 8}, {Boot: true}},
+	}}), "only boot disks with an explicit size count")
 }
 
 // TestSameImage_UbuntuBuild protects drift across packaging: the plain and the per-patch image of

@@ -49,7 +49,7 @@ imageSelectorTerms:
     version: latest
 ```
 
-**Faster startup on 1.36+.** Karpenter prefers the per-patch image GKE boots its own Ubuntu pools with (components preloaded): nodes were Ready in about 80 seconds instead of 204. Its base build can be older than the newest plain build, so the first reconciliation can replace `latest` Ubuntu nodes once; use NodePool disruption budgets or pin `version: vYYYYMMDD`. See [Ubuntu per-patch images](docs/image-selection.md#ubuntu-per-patch-images).
+**Faster startup on 1.36+.** Karpenter prefers the per-patch image GKE boots its own Ubuntu pools with (components preloaded): nodes were Ready in about 80 seconds instead of 204. Its base build can be older than the newest plain build, so the first reconciliation can replace `latest` Ubuntu nodes once; use NodePool disruption budgets or pin `version: vYYYYMMDD`. The per-patch image needs a 12 GiB boot disk, so a NodeClass with an explicit boot disk below that keeps the plain image; raise `sizeGiB` to 12 or more to use it. See [Ubuntu per-patch images](docs/image-selection.md#ubuntu-per-patch-images).
 
 GKE publishes each Ubuntu release only for some minors, and Karpenter never substitutes another (November 2026: 22.04 through 1.31, 24.04 for 1.31–1.37, 26.04 for 1.37 and 1.38 alpha). A NodeClass whose release has no image for the cluster's minor reports `ImagesReady=False` / `ImageResolutionFailed`; change `osVersion` (nodes then drift) before upgrading the cluster. See [OS families](docs/image-selection.md#os-families).
 

@@ -1743,6 +1743,48 @@ func (e *Environment) ResolveUbuntuVersion(ctx context.Context, release string) 
 	return "v" + m[1]
 }
 
+// ResolveUbuntuPerPatchImage independently looks up the per-patch image (gke-<version>-gke<build>-
+// ubuntu-<release>-<minor>-amd64-vDATE-c-pre) that GKE publishes for the cluster master's exact
+// version and the given release token ("2404", "2604"), and returns its name, or "" when there is
+// none (the legacy Ubuntu project, GKE before 1.36, or no published image). When GKE published
+// several base builds the newest date wins. The whole project is scanned, so it does not share the
+// controller's page bound.
+func (e *Environment) ResolveUbuntuPerPatchImage(ctx context.Context, release string) string {
+	serverVer, err := e.KubeClient.Discovery().ServerVersion()
+	Expect(err).NotTo(HaveOccurred(), "getting server version")
+	m := regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)-gke\.(\d+)`).FindStringSubmatch(serverVer.GitVersion)
+	if m == nil {
+		return ""
+	}
+	minor, err := strconv.Atoi(m[2])
+	Expect(err).NotTo(HaveOccurred(), "parsing minor of server version %s", serverVer.GitVersion)
+	project := ubuntuImageProjectForMinor(minor)
+	if project != "gke-ubuntu-node-images" {
+		return ""
+	}
+	name := regexp.MustCompile(fmt.Sprintf(`^gke-%s%s%s-gke%s-ubuntu-%s-\d+-\d+-amd64-(v\d{8}[a-z]?)-c-pre$`, m[1], m[2], m[3], m[4], release))
+	best, bestDate := "", ""
+	pageToken := ""
+	for {
+		call := e.computeSvc.Images.List(project).OrderBy("creationTimestamp desc").
+			Fields(googleapi.Field("nextPageToken,items(name,creationTimestamp,status,deprecated/state)"))
+		if pageToken != "" {
+			call.PageToken(pageToken)
+		}
+		page, err := call.Context(ctx).Do()
+		Expect(err).NotTo(HaveOccurred(), "listing Ubuntu images in %s", project)
+		for _, img := range page.Items {
+			if sub := name.FindStringSubmatch(img.Name); sub != nil && usableImage(img) && sub[1] > bestDate {
+				best, bestDate = img.Name, sub[1]
+			}
+		}
+		if page.NextPageToken == "" {
+			return best
+		}
+		pageToken = page.NextPageToken
+	}
+}
+
 // GetChannelVersion fetches the GKE server config and returns the version string
 // that Karpenter would select for channelName given the current cluster version
 // (e.g., "1.34.7-gke.1068000"). Fails the test if the channel or version cannot

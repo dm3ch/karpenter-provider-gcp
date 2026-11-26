@@ -216,22 +216,29 @@ func (u *Ubuntu) ResolveImages(ctx context.Context, version string) (Images, err
 	}
 	// Prefer the per-patch image GKE publishes for the exact master version: it carries that
 	// release's components preloaded, which is what GKE node pools boot, and starts nodes much
-	// faster. It is an optimization, so a failed or empty lookup falls back to the plain image.
+	// faster. No per-patch image means the plain image, but a failed lookup is an error: silently
+	// switching to the plain image, whose base build can be newer, would drift running nodes.
 	perPatch, err := u.findPerPatch(ctx, project, kubernetesVersion, version)
 	if err != nil {
-		log.FromContext(ctx).Error(err, "failed to look up per-patch Ubuntu images; using the plain images")
+		log.FromContext(ctx).Error(err, "failed to look up per-patch Ubuntu images")
+		return Images{}, err
 	}
 
-	return u.imagesFor(plain, perPatch, project, kubernetesVersion, version)
+	return u.imagesFor(plain, perPatch, project, kubernetesVersion, version, bootDiskGiB(ctx))
 }
 
-// imagesFor picks the image for each architecture, the per-patch one when there is one. A missing
-// architecture (including a pinned date absent for one arch) fails resolution instead of producing
-// a single-arch set that reads as ImagesReady=True.
-func (u *Ubuntu) imagesFor(plain, perPatch map[string]*compute.Image, project, kubernetesVersion, version string) (Images, error) {
+// imagesFor picks the image for each architecture, the per-patch one when there is one and the
+// NodeClass boot disk (bootGiB, 0 when unset) can hold it: GCE rejects a disk smaller than the
+// image, and the per-patch image is larger than the plain one. A missing architecture (including a
+// pinned date absent for one arch) fails resolution instead of producing a single-arch set that
+// reads as ImagesReady=True.
+func (u *Ubuntu) imagesFor(plain, perPatch map[string]*compute.Image, project, kubernetesVersion, version string, bootGiB int64) (Images, error) {
 	ret := Images{}
 	for _, arch := range ubuntuArchitectures {
 		img, ok := perPatch[arch]
+		if ok && bootGiB > 0 && img.DiskSizeGb > bootGiB {
+			ok = false
+		}
 		if !ok {
 			img, ok = plain[arch]
 		}
@@ -298,7 +305,15 @@ func (u *Ubuntu) findPerPatch(ctx context.Context, project, kubernetesVersion, v
 	cacheKey := strings.Join([]string{project, u.release, kubernetesVersion, version}, "|")
 	if u.perPatchCache != nil {
 		if hit, ok := u.perPatchCache.Get(cacheKey); ok {
-			return hit.(map[string]*compute.Image), nil
+			found := hit.(map[string]*compute.Image)
+			stillUsable, err := u.stillUsable(ctx, project, found)
+			if err != nil {
+				return nil, err
+			}
+			if stillUsable {
+				return found, nil
+			}
+			u.perPatchCache.Delete(cacheKey) // deleted or deprecated since it was cached: scan again
 		}
 	}
 	scan := newPerPatchScan(k8sKey, build, u.release, version)
@@ -313,6 +328,21 @@ func (u *Ubuntu) findPerPatch(ctx context.Context, project, kubernetesVersion, v
 		u.perPatchCache.Set(cacheKey, scan.found, ttl)
 	}
 	return scan.found, nil
+}
+
+// stillUsable reports whether every cached per-patch image still exists and is usable, so an image
+// Google deleted or deprecated within the cache lifetime is not kept selected.
+func (u *Ubuntu) stillUsable(ctx context.Context, project string, found map[string]*compute.Image) (bool, error) {
+	for _, img := range found {
+		current, err := lookupImage(ctx, u.computeService, project, img.Name)
+		if err != nil {
+			return false, fmt.Errorf("checking per-patch Ubuntu image %s in %s: %w", img.Name, project, err)
+		}
+		if current == nil || !imageUsable(current) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // perPatchScan selects, while images are visited newest first, the newest base build of the
