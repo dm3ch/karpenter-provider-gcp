@@ -28,13 +28,17 @@ import (
 var env *environment.Environment
 var _ = BeforeEach(func() { env = environment.Current() })
 
-var _ = Describe("Networking", Label("suite:networking"), func() {
-	It("should provision a node with no external IP when enableExternalIPAccess is false", func(ctx SpecContext) {
+var _ = DescribeTable("Networking on private nodes", Label("suite:networking"),
+	func(ctx SpecContext, networkConfig map[string]any, wantCanIPForward bool) {
 		runPrivateNodeTest(ctx, environment.TestCase{
 			CapacityType:  karpv1.CapacityTypeOnDemand,
 			Arch:          karpv1.ArchitectureAmd64,
 			Families:      []string{"n2"},
 			InstanceTypes: []string{"n2-standard-2", "n2-standard-4"},
-		})
-	}, SpecTimeout(15*time.Minute))
-})
+		}, networkConfig, wantCanIPForward)
+	},
+	Entry("provisions a node without an external IP and leaves IP forwarding disabled by default",
+		map[string]any{"enablePrivateNodes": true}, false, SpecTimeout(15*time.Minute)),
+	Entry("enables IP forwarding on the GCE instance when canIpForward is true",
+		map[string]any{"enablePrivateNodes": true, "canIpForward": true}, true, SpecTimeout(15*time.Minute)),
+)

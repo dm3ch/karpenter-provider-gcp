@@ -1129,6 +1129,9 @@ func (p *DefaultProvider) buildInstance(ctx context.Context, nodeClaim *karpv1.N
 		Scheduling:        setupScheduling(capacityType, nodeClass),
 		Tags:              buildInstanceTags(p.clusterName, clusterConfig.Id, nodeClass.Spec.NetworkTags),
 	}
+	if nodeClass.Spec.NetworkConfig != nil {
+		instance.CanIpForward = nodeClass.Spec.NetworkConfig.CanIPForward
+	}
 	if len(nodeClass.Spec.ResourceManagerTags) > 0 {
 		instance.Params = &compute.InstanceParams{
 			ResourceManagerTags: lo.MapValues(nodeClass.Spec.ResourceManagerTags, func(v v1alpha1.ResourceManagerTagValue, _ string) string {

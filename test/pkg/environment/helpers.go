@@ -488,10 +488,8 @@ func (e *Environment) CreateNodeClassWithNamedDataDisks(ctx context.Context, nam
 	e.trackNodeClass(name)
 }
 
-// CreateNodeClassWithPrivateNetwork creates a GCENodeClass identical to
-// CreateNodeClass but with networkConfig.enablePrivateNodes set to true,
-// so Karpenter provisions nodes with no external (public) IP.
-func (e *Environment) CreateNodeClassWithPrivateNetwork(ctx context.Context, name string) {
+// CreateNodeClassWithNetworkConfig creates a COS NodeClass with the given networkConfig.
+func (e *Environment) CreateNodeClassWithNetworkConfig(ctx context.Context, name string, networkConfig map[string]any) {
 	deleteIfExists(ctx, e.DynamicClient, gceNodeClassGVR, name)
 	obj := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "karpenter.k8s.gcp/v1alpha1",
@@ -505,9 +503,7 @@ func (e *Environment) CreateNodeClassWithPrivateNetwork(ctx context.Context, nam
 				map[string]any{"sizeGiB": int64(DefaultE2EDiskGiB), "boot": true},
 			},
 			"subnetRangeName": e.PodsRangeName,
-			"networkConfig": map[string]any{
-				"enablePrivateNodes": true,
-			},
+			"networkConfig":   networkConfig,
 		},
 	}}
 	_, err := e.DynamicClient.Resource(gceNodeClassGVR).Create(ctx, obj, metav1.CreateOptions{})

@@ -219,7 +219,7 @@ _Appears in:_
 | `gvnic` _[VirtualNIC](#virtualnic)_ | GVNIC configures Google Virtual NIC on every network interface of provisioned nodes.<br />When unset, GCE chooses the interface type. Mirrors GKE NodeConfig.gvnic<br />(Terraform node_config.gvnic). |  | Optional: \{\} <br /> |
 | `advancedMachineFeatures` _[AdvancedMachineFeatures](#advancedmachinefeatures)_ | AdvancedMachineFeatures configures advanced CPU and virtualisation options for provisioned nodes. |  | Optional: \{\} <br /> |
 | `confidentialInstanceType` _string_ | ConfidentialInstanceType enables Confidential VM for provisioned nodes using the<br />named technology (AMD SEV / SEV-SNP or Intel TDX), providing in-use memory<br />encryption. Leave unset to disable. Only supported on specific machine families. |  | Enum: [SEV SEV_SNP TDX] <br />Optional: \{\} <br /> |
-| `networkConfig` _[NetworkConfig](#networkconfig)_ | NetworkConfig allows overriding per-interface network settings for provisioned nodes. |  | Optional: \{\} <br /> |
+| `networkConfig` _[NetworkConfig](#networkconfig)_ | NetworkConfig configures networking for provisioned nodes. |  | Optional: \{\} <br /> |
 | `autoGPUTaint` _boolean_ | AutoGPUTaint, when true, automatically applies nvidia.com/gpu=present:NoSchedule<br />to any GPU node at provisioning time, regardless of the NodePool configuration.<br />Disabled by default to preserve backward compatibility. |  | Optional: \{\} <br /> |
 | `gpuDriverVersion` _string_ | GPUDriverVersion controls which NVIDIA driver version GKE installs on GPU nodes.<br />Mirrors the GKE node pool gpu_driver_installation_config.gpu_driver_version field.<br />Valid values: "default" (GKE-recommended stable), "latest" (newest, COS only),<br />"disabled" (skip automatic installation).<br />Ignored for non-GPU instance types. | default | Enum: [default latest disabled] <br />Optional: \{\} <br /> |
 | `gpuSharingConfig` _[GPUSharingConfig](#gpusharingconfig)_ | GPUSharingConfig lets multiple containers share each physical GPU.<br />Mirrors the GKE node pool guest_accelerator.gpu_sharing_config field.<br />Ignored for non-GPU instance types. |  | Optional: \{\} <br /> |
@@ -446,8 +446,6 @@ _Appears in:_
 
 
 NetworkConfig holds network settings for provisioned nodes.
-The shape mirrors the Terraform google_container_node_pool network_config block
-so that operators already familiar with GKE node pools can transfer that knowledge directly.
 
 
 
@@ -457,6 +455,7 @@ _Appears in:_
 | Field | Description | Default | Validation |
 | --- | --- | --- | --- |
 | `enablePrivateNodes` _boolean_ | EnablePrivateNodes controls whether provisioned nodes have internal IP addresses only<br />(no external IP). When unset, defaults to the cluster's EnablePrivateNodes setting.<br />Mirrors GKE node pool network_config.enable_private_nodes. |  | Optional: \{\} <br /> |
+| `canIpForward` _boolean_ | CanIPForward enables Compute Engine IP forwarding on all VM interfaces.<br />Defaults to false. |  | Optional: \{\} <br /> |
 | `subnetwork` _string_ | Subnetwork is the subnetwork for the primary network interface.<br />Format: projects/\{project\}/regions/\{region\}/subnetworks/\{name\}<br />When unset, defaults to the cluster's primary subnetwork.<br />Mirrors GKE node pool network_config.subnetwork. |  | Optional: \{\} <br /> |
 | `additionalNetworkInterfaces` _[AdditionalNetworkInterface](#additionalnetworkinterface) array_ | AdditionalNetworkInterfaces adds secondary network interfaces to provisioned nodes.<br />Each entry must specify a subnetwork.<br />Mirrors GKE node pool network_config.additional_node_network_configs. |  | MaxItems: 7 <br />Optional: \{\} <br /> |
 

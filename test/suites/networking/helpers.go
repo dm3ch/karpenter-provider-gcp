@@ -26,10 +26,7 @@ import (
 	"github.com/karpenter-gcp/karpenter-provider-gcp/test/pkg/environment"
 )
 
-// runPrivateNodeTest provisions a node via a GCENodeClass with
-// networkConfig.enablePrivateNodes: true and asserts the resulting GCE instance
-// has no access configs on its primary network interface (i.e. no external public IP).
-func runPrivateNodeTest(ctx context.Context, tc environment.TestCase) {
+func runPrivateNodeTest(ctx context.Context, tc environment.TestCase, networkConfig map[string]any, wantCanIPForward bool) {
 	prefix := environment.TestPrefix(tc.Arch, tc.CapacityType, "networking")
 	suffix := environment.UniqueSuffix()
 	name := prefix + "-" + suffix
@@ -47,7 +44,7 @@ func runPrivateNodeTest(ctx context.Context, tc environment.TestCase) {
 		}
 	})
 
-	env.CreateNodeClassWithPrivateNetwork(ctx, name)
+	env.CreateNodeClassWithNetworkConfig(ctx, name, networkConfig)
 	env.CreateNodePool(ctx, name, name, tc)
 	env.CreateDeployment(ctx, name, name, name, tc.Arch)
 
@@ -64,4 +61,5 @@ func runPrivateNodeTest(ctx context.Context, tc environment.TestCase) {
 	Expect(instance.NetworkInterfaces).NotTo(BeEmpty(), "GCE instance has no network interfaces")
 	Expect(instance.NetworkInterfaces[0].AccessConfigs).To(BeEmpty(),
 		"expected no access configs (no external IP) on primary interface of node %s", provisionedNodeName)
+	Expect(instance.CanIpForward).To(Equal(wantCanIPForward), "canIpForward on GCE instance %s", instance.Name)
 }

@@ -2399,6 +2399,40 @@ func TestBuildInstance_SortsMetadataAfterAllPatches(t *testing.T) {
 	require.Equal(t, want, got)
 }
 
+func TestBuildInstance_CanIPForward(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		networkConfig *v1alpha1.NetworkConfig
+		want          json.RawMessage
+	}{
+		{name: "no network config"},
+		{name: "omitted", networkConfig: &v1alpha1.NetworkConfig{EnablePrivateNodes: ptr.To(true)}},
+		{name: "disabled", networkConfig: &v1alpha1.NetworkConfig{CanIPForward: false}},
+		{name: "enabled", networkConfig: &v1alpha1.NetworkConfig{CanIPForward: true}, want: json.RawMessage("true")},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			nodeClass := &v1alpha1.GCENodeClass{Spec: v1alpha1.GCENodeClassSpec{NetworkConfig: tt.networkConfig}}
+			instance, err := makeProvider().buildInstance(
+				context.Background(),
+				spotOrOnDemandNodeClaim(), nodeClass, makeNonGPUIT(), makeSourceMetadata("max-pods-per-node=110,max-pods=110"),
+				makeCluster("projects/p/global/networks/my-vpc", "regions/us-central1/subnetworks/my-subnet", "pods", false),
+				"us-central1-a", "karpenter-forwarding-test", karpv1.CapacityTypeOnDemand, nil, 0, "pods", testLaunchImage(nodeClass),
+			)
+			require.NoError(t, err)
+
+			body, err := json.Marshal(instance)
+			require.NoError(t, err)
+			var request map[string]json.RawMessage
+			require.NoError(t, json.Unmarshal(body, &request))
+			require.Equal(t, tt.want, request["canIpForward"])
+		})
+	}
+}
+
 func TestBuildInstance_ResourceManagerTags(t *testing.T) {
 	t.Parallel()
 

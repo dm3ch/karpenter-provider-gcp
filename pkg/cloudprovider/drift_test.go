@@ -325,6 +325,25 @@ func TestGVNICDisabledDrift(t *testing.T) {
 	require.Equal(t, NodeClassDrift, cp.areStaticFieldsDrifted(claim, class))
 }
 
+func TestCanIPForwardDrift(t *testing.T) {
+	t.Parallel()
+
+	class := &v1alpha1.GCENodeClass{
+		Spec: v1alpha1.GCENodeClassSpec{
+			NetworkConfig: &v1alpha1.NetworkConfig{EnablePrivateNodes: ptr(true)},
+		},
+	}
+	claim := nodeClaim(class.Hash())
+	class.Spec.NetworkConfig.CanIPForward = true
+	class.Annotations = map[string]string{
+		v1alpha1.AnnotationGCENodeClassHash:        class.Hash(),
+		v1alpha1.AnnotationGCENodeClassHashVersion: v1alpha1.GCENodeClassHashVersion,
+	}
+
+	cp := &CloudProvider{}
+	require.Equal(t, NodeClassDrift, cp.areStaticFieldsDrifted(claim, class))
+}
+
 // TestNodeClassDriftFieldCoverage verifies that each GCENodeClassSpec field either
 // triggers NodeClassDrift (hashed fields) or produces no drift (hash:"ignore" fields).
 // One row per field — when per-field drift reasons are added in the future (e.g.

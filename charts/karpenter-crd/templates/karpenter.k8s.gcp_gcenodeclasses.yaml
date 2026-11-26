@@ -730,8 +730,7 @@ spec:
                   Mirrors GKE NodeConfig.minCpuPlatform (Terraform node_config.min_cpu_platform).
                 type: string
               networkConfig:
-                description: NetworkConfig allows overriding per-interface network
-                  settings for provisioned nodes.
+                description: NetworkConfig configures networking for provisioned nodes.
                 properties:
                   additionalNetworkInterfaces:
                     description: |-
@@ -758,6 +757,11 @@ spec:
                       type: object
                     maxItems: 7
                     type: array
+                  canIpForward:
+                    description: |-
+                      CanIPForward enables Compute Engine IP forwarding on all VM interfaces.
+                      Defaults to false.
+                    type: boolean
                   enablePrivateNodes:
                     description: |-
                       EnablePrivateNodes controls whether provisioned nodes have internal IP addresses only

@@ -148,7 +148,7 @@ type GCENodeClassSpec struct {
 	// +kubebuilder:validation:Enum=SEV;SEV_SNP;TDX
 	// +optional
 	ConfidentialInstanceType *string `json:"confidentialInstanceType,omitempty"`
-	// NetworkConfig allows overriding per-interface network settings for provisioned nodes.
+	// NetworkConfig configures networking for provisioned nodes.
 	// +optional
 	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
 	// AutoGPUTaint, when true, automatically applies nvidia.com/gpu=present:NoSchedule
@@ -231,14 +231,16 @@ type VirtualNIC struct {
 }
 
 // NetworkConfig holds network settings for provisioned nodes.
-// The shape mirrors the Terraform google_container_node_pool network_config block
-// so that operators already familiar with GKE node pools can transfer that knowledge directly.
 type NetworkConfig struct {
 	// EnablePrivateNodes controls whether provisioned nodes have internal IP addresses only
 	// (no external IP). When unset, defaults to the cluster's EnablePrivateNodes setting.
 	// Mirrors GKE node pool network_config.enable_private_nodes.
 	// +optional
 	EnablePrivateNodes *bool `json:"enablePrivateNodes,omitempty"`
+	// CanIPForward enables Compute Engine IP forwarding on all VM interfaces.
+	// Defaults to false.
+	// +optional
+	CanIPForward bool `json:"canIpForward,omitempty"`
 	// Subnetwork is the subnetwork for the primary network interface.
 	// Format: projects/{project}/regions/{region}/subnetworks/{name}
 	// When unset, defaults to the cluster's primary subnetwork.

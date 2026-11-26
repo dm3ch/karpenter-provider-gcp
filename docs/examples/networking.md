@@ -8,6 +8,20 @@ See [`examples/nodeclass/private-nodes-gcenodeclass.yaml`](https://github.com/ka
 
 See [Private Nodes](../networking/private-nodes.md) for prerequisites and caveats.
 
+## IP forwarding
+
+Set `spec.networkConfig.canIpForward: true` on a `GCENodeClass` to enable Compute Engine IP forwarding on VMs Karpenter creates for that class. The default is `false`.
+
+```yaml
+spec:
+  networkConfig:
+    canIpForward: true
+```
+
+This relaxes Compute Engine's source IP checks on every VM interface. Enable it only on dedicated NodePools that need forwarding and restrict who can edit their GCENodeClasses. Configure any required guest forwarding, firewall rules and NAT separately. See [Compute Engine IP forwarding](https://docs.cloud.google.com/vpc/docs/using-routes#enable_ip_forwarding_for_instances).
+
+Changing the value marks existing NodeClaims as drifted. Karpenter applies the new value when it creates replacement VMs, subject to the NodePool's disruption settings.
+
 ## Custom subnetwork
 
 Place Karpenter nodes in a specific subnetwork, rather than the cluster's default subnet.
