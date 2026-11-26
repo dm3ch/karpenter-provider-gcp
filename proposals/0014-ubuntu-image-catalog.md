@@ -99,17 +99,17 @@ A node's boot image counts as the published image when the paths match, or when 
 
 ## Risks and Mitigations
 
-| Risk                                                             | Likelihood             | Impact                                        | Mitigation                                                                                    |
-|------------------------------------------------------------------|------------------------|-----------------------------------------------|-----------------------------------------------------------------------------------------------|
-| Controller cannot read `gke-ubuntu-node-images` (policy, VPC-SC) | Medium                 | Ubuntu `ImagesReady=False` on 1.36+           | `MIGRATION.md` and docs name the project; the failure names it.                               |
-| Google stops publishing a release for a minor (24.04 on 1.38)    | High (certain on 1.38) | Existing NodeClass cannot resolve             | Clear error; docs list availability; no silent release switch.                                |
-| A third spelling of one selection adds API surface               | Medium                 | Confusing docs, more validation               | Old families frozen and deprecated; docs show only the new shape.                             |
-| Names diverge between the two projects                           | Low                    | Spurious or missed drift                      | Name equality is unit-tested; revisit if Google changes naming.                               |
-| Per-patch base older than the newest plain image                 | Medium                 | One replacement of `latest` nodes on upgrade  | Documented; disruption budgets; pin `version`.                                                |
-| Several bases for one version; GKE's assignment is unobservable  | Medium                 | "Newest" may differ from the base GKE assigns | Deliberate choice, documented; a pin selects exactly.                                         |
-| Explicit Ubuntu boot disk of 10 or 11 GiB on 1.36+               | Low                    | Launch fails with GCE's disk size error       | `BootDiskTooSmall` reason and Warning event; documented; such a disk is impractical anyway.   |
-| Per-patch lookup costs catalog quota                             | Low                    | Extra list calls                              | No filter, partial responses, hour-long hit cache, cached images rechecked.                   |
-| Ubuntu 26.04 bootstrap differs from 24.04                        | Medium                 | 26.04 nodes fail to register                  | Documented as not validated live (alpha minors only); the E2E spec self-skips without images. |
+| Risk                                                             | Likelihood             | Impact                                        | Mitigation                                                                                                                  |
+|------------------------------------------------------------------|------------------------|-----------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------|
+| Controller cannot read `gke-ubuntu-node-images` (policy, VPC-SC) | Medium                 | Ubuntu `ImagesReady=False` on 1.36+           | `MIGRATION.md` and docs name the project; the failure names it.                                                             |
+| Google stops publishing a release for a minor (24.04 on 1.38)    | High (certain on 1.38) | Existing NodeClass cannot resolve             | Clear error; docs list availability; no silent release switch.                                                              |
+| A third spelling of one selection adds API surface               | Medium                 | Confusing docs, more validation               | Old families frozen and deprecated; docs show only the new shape.                                                           |
+| Names diverge between the two projects                           | Low                    | Spurious or missed drift                      | Name equality is unit-tested; revisit if Google changes naming.                                                             |
+| Per-patch base older than the newest plain image                 | Medium                 | One replacement of `latest` nodes on upgrade  | Documented; disruption budgets; pin `version`.                                                                              |
+| Several bases for one version; GKE's assignment is unobservable  | Medium                 | "Newest" may differ from the base GKE assigns | Deliberate choice, documented; a pin selects exactly.                                                                       |
+| Explicit Ubuntu boot disk of 10 or 11 GiB on 1.36+               | Low                    | Launch fails with GCE's disk size error       | `BootDiskTooSmall` reason and Warning event; documented; such a disk is impractical anyway.                                 |
+| Per-patch lookup costs catalog quota                             | Low                    | Extra list calls                              | No filter, partial responses, hour-long hit cache, cached images rechecked.                                                 |
+| Ubuntu 26.04 bootstrap differs from 24.04                        | Medium                 | 26.04 nodes fail to register                  | Validated live once (amd64, on-demand, GKE 1.37.1); arm64 and 1.38 (alpha) are not. The E2E spec self-skips without images. |
 
 ## Test Plan
 
@@ -126,7 +126,7 @@ A node's boot image counts as the published image when the paths match, or when 
 ### E2E / Integration Tests
 
 - The Ubuntu provisioning and pinning suites resolve from the new project on a 1.36+ cluster and accept the per-patch image for `latest`.
-- An `osVersion: "26.04"` spec runs where the cluster's minor has 26.04 images and self-skips otherwise. The persistent E2E cluster runs 1.36, so 26.04 bootstrap is not validated by this change.
+- An `osVersion: "26.04"` spec runs where the cluster's minor has 26.04 images and self-skips otherwise. It passed on the persistent E2E cluster on GKE 1.37.1 (2026-11-26): a node launched from the plain 26.04 image, registered and ran a pod. That validates 26.04 bootstrap for amd64 and on-demand on that version only; arm64 and 1.38 (alpha) are not validated.
 
 ## Migration
 
