@@ -388,6 +388,14 @@ gcloud compute images describe <image-name> --project <image-project> --format="
 
 ---
 
+## NodeClaim launch fails with `BootDiskTooSmall`
+
+If the `NodeClaim` `Launched` condition reports the reason `BootDiskTooSmall`, and the NodeClaim has a `BootDiskTooSmall` Warning event, GCE rejected the boot disk because it is smaller than the boot image ("Requested disk size cannot be smaller than the image size"). The Ubuntu per-patch image used on GKE 1.36 and later is 12 GiB, so an explicit boot disk of 10 or 11 GiB fails; the COS per-patch images are larger still (15 GiB).
+
+Raise `sizeGiB` of the boot disk (`spec.disks[]` with `boot: true`) in the GCENodeClass to at least the image size. The problem affects every instance type, so Karpenter does not try the next one or mark any offering unavailable, and the launch succeeds after the NodeClass is updated.
+
+---
+
 ## Zone mismatch errors
 
 Karpenter provisions nodes only in zones configured for your GKE cluster. If a NodePool's `topology.kubernetes.io/zone` requirement specifies zones outside the cluster's configured locations, provisioning fails with an error like:

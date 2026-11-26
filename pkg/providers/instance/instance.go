@@ -328,6 +328,28 @@ func isResourceNotReadyError(err error) bool {
 	return false
 }
 
+// BootDiskTooSmallReason is the NodeClaim Launched condition reason when GCE rejects a boot disk
+// smaller than its image.
+const BootDiskTooSmallReason = "BootDiskTooSmall"
+
+// isBootDiskTooSmallError reports whether GCE rejected the boot disk because it is smaller than
+// the image: "Invalid value for field '...initializeParams.diskSizeGb': '11'. Requested disk size
+// cannot be smaller than the image size (12 GB)".
+func isBootDiskTooSmallError(err error) bool {
+	apiErr, ok := errors.AsType[*googleapi.Error](err)
+	return ok && strings.Contains(apiErr.Message, "diskSizeGb") && strings.Contains(apiErr.Message, "cannot be smaller than the image size")
+}
+
+// handleBootDiskTooSmallError turns that rejection into a non-retryable launch error with an
+// actionable reason: every other instance type and zone would fail the same way.
+func handleBootDiskTooSmallError(err error, retryable bool) (bool, error) {
+	if isBootDiskTooSmallError(err) {
+		return false, cloudprovider.NewCreateError(err, BootDiskTooSmallReason,
+			"The boot disk is smaller than the image; raise sizeGiB of the boot disk in the GCENodeClass spec.disks")
+	}
+	return retryable, err
+}
+
 func isIPSpaceExhausted(details insufficientCapacityDetails) bool {
 	return details.code == "IP_SPACE_EXHAUSTED_WITH_DETAILS" || details.code == "IP_SPACE_EXHAUSTED"
 }
@@ -706,6 +728,7 @@ func (p *DefaultProvider) createInstanceWithPodRanges(ctx context.Context, nodeC
 		}
 		log.FromContext(ctx).Error(err, result.failureMessage, "instanceType", instanceType.Name, "zone", zone)
 		retryable, err = handleResourceNotReadyError(err, retryable)
+		retryable, err = handleBootDiskTooSmallError(err, retryable)
 		return nil, "", retryable, err
 	}
 

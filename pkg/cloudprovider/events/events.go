@@ -37,3 +37,15 @@ func NodeClaimFailedToResolveNodeClass(nodeClaim *v1.NodeClaim) events.Event {
 		DedupeValues:   []string{string(nodeClaim.UID)},
 	}
 }
+
+// NodeClaimBootDiskTooSmall reports that GCE rejected the launch because the NodeClass boot disk is
+// smaller than the image, which no retry fixes until the NodeClass is changed.
+func NodeClaimBootDiskTooSmall(nodeClaim *v1.NodeClaim, err error) events.Event {
+	return events.Event{
+		InvolvedObject: nodeClaim,
+		Type:           corev1.EventTypeWarning,
+		Reason:         "BootDiskTooSmall",
+		Message:        "The boot disk is smaller than the image; raise sizeGiB of the boot disk in the GCENodeClass spec.disks: " + err.Error(),
+		DedupeValues:   []string{string(nodeClaim.UID)},
+	}
+}
