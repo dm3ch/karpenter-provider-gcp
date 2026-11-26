@@ -1,0 +1,54 @@
+# Publishes OpenSSF Scorecard results to api.scorecard.dev for the README badge.
+# Publishing restricts this workflow: no workflow-level env/defaults or write
+# permissions, and only approved actions in the job. See
+# https://github.com/ossf/scorecard-action#workflow-restrictions
+name: Scorecard
+
+on:
+  # Refresh the Branch-Protection check when rulesets change.
+  branch_protection_rule: {}
+  # Keeps the Maintained check current.
+  schedule:
+    - cron: '27 3 * * 0'
+  push:
+    branches: [ "main" ]
+  workflow_dispatch: {}
+
+permissions: {}
+
+jobs:
+  analysis:
+    name: Scorecard analysis
+    # Scorecard supports only the default branch and does not run on forks.
+    if: >-
+      github.repository == 'karpenter-gcp/karpenter-provider-gcp' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      security-events: write # Upload SARIF to code scanning.
+      id-token: write # Sign results published to api.scorecard.dev.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run analysis
+        uses: ossf/scorecard-action@v2.6.0
+        with:
+          results_file: results.sarif
+          results_format: sarif
+          publish_results: true
+          fail_on_publish_error: true
+      - name: Upload artifact
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: scorecard-sarif
+          path: results.sarif
+          retention-days: 5
+      - name: Upload to code scanning
+        if: ${{ always() }}
+        uses: github/codeql-action/upload-sarif@v4.39.3
+        with:
+          sarif_file: results.sarif
