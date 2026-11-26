@@ -58,12 +58,12 @@ var _ = DescribeTable("ChannelImageSelection", Label("suite:channel-image-select
 	Entry("Ubuntu osVersion 24.04 / version: latest / amd64 / on-demand",
 		familyChannelTestCase{family: gcpv1alpha1.ImageFamilyUbuntu, osVersion: "24.04", version: "latest"},
 		SpecTimeout(15*time.Minute)),
-	// osVersion default follows GKE's default Ubuntu release for the cluster version, which is
-	// 24.04 on the 1.32.1 to 1.36 clusters this suite runs on.
+	// osVersion default follows GKE's default Ubuntu release for the cluster version (22.04 before
+	// 1.32.1, 24.04 after); the expectation is derived from the cluster version.
 	Entry("Ubuntu osVersion default / version: latest / amd64 / on-demand",
 		familyChannelTestCase{family: gcpv1alpha1.ImageFamilyUbuntu, osVersion: gcpv1alpha1.ImageOSVersionDefault, version: "latest"},
 		SpecTimeout(15*time.Minute)),
-	// Omitting osVersion means default, so it must resolve the same 24.04 image on these clusters.
+	// Omitting osVersion means default, so it must resolve the same image as osVersion default.
 	Entry("Ubuntu osVersion omitted / version: latest / amd64 / on-demand",
 		familyChannelTestCase{family: gcpv1alpha1.ImageFamilyUbuntu, version: "latest"},
 		SpecTimeout(15*time.Minute)),
@@ -169,13 +169,28 @@ func expectResolvedImage(ctx context.Context, tc familyChannelTestCase, sourceIm
 		Expect(sourceImages[0]).To(ContainSubstring(expectedSubstr),
 			"resolved COS image does not match channel %s version %s (expected pattern %s in %s)",
 			tc.channel, expectedGKEVersion, expectedSubstr, sourceImages[0])
-	case tc.version == "latest" && tc.osVersion == "26.04":
+	case tc.version == "latest":
+		expectResolvedUbuntuImage(ctx, tc, sourceImages[0])
+	}
+}
+
+// expectResolvedUbuntuImage verifies `version: latest` Ubuntu selections resolve the release the
+// selector asks for. Specs of other families and pins have no expectation here.
+func expectResolvedUbuntuImage(ctx context.Context, tc familyChannelTestCase, image string) {
+	switch {
+	case tc.osVersion == "26.04":
 		// A fixed 26.04 selection must resolve the newest clean 26.04 image for the cluster's minor.
-		expectUbuntuImage(ctx, sourceImages[0], "2604", env.ResolveUbuntuVersion(ctx, "2604"))
-	case tc.version == "latest" && (tc.family == gcpv1alpha1.ImageFamilyUbuntu2404 || tc.osVersion == "24.04" || tc.osVersion == gcpv1alpha1.ImageOSVersionDefault ||
-		(tc.family == gcpv1alpha1.ImageFamilyUbuntu && tc.osVersion == "")):
-		// For version: latest, the resolved image must embed the independently-queried Ubuntu 24.04 version.
-		expectUbuntuImage(ctx, sourceImages[0], "2404", env.ResolveCurrentUbuntuVersion(ctx))
+		expectUbuntuImage(ctx, image, "2604", env.ResolveUbuntuVersion(ctx, "2604"))
+	case tc.family == gcpv1alpha1.ImageFamilyUbuntu2404 || tc.osVersion == "24.04":
+		// A fixed 24.04 selection must resolve the newest 24.04 image for the cluster's minor.
+		expectUbuntuImage(ctx, image, "2404", env.ResolveCurrentUbuntuVersion(ctx))
+	case tc.osVersion == gcpv1alpha1.ImageOSVersionDefault || (tc.family == gcpv1alpha1.ImageFamilyUbuntu && tc.osVersion == ""):
+		// default and an omitted osVersion follow GKE's default release for the cluster version
+		// (22.04 before 1.32.1, 24.04 after), not always 24.04.
+		release := env.ExpectedUbuntuDefaultRelease(ctx)
+		version := env.ResolveUbuntuVersion(ctx, release)
+		Expect(version).NotTo(BeEmpty(), "no Ubuntu %s image found for the cluster's K8s minor", release)
+		expectUbuntuImage(ctx, image, release, version)
 	}
 }
 

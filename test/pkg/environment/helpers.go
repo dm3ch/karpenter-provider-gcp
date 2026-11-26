@@ -1728,7 +1728,8 @@ func (e *Environment) ResolveUbuntuVersion(ctx context.Context, release string) 
 
 	project := ubuntuImageProjectForMinor(minor)
 	// Clean builds only: variants (-tpu, -cgroupsv1, -linux64k, ...) are suffixes after the date.
-	clean := regexp.MustCompile(fmt.Sprintf(`^ubuntu-gke-%s-%s-%s-amd64-v\d{8}[a-z]?$`, release, parts[0], parts[1]))
+	// Ubuntu 22.04 amd64 names carry no architecture token.
+	clean := regexp.MustCompile(fmt.Sprintf(`^ubuntu-gke-%s-%s-%s-(?:amd64-)?v\d{8}[a-z]?$`, release, parts[0], parts[1]))
 	best, listErr := newestImage(ctx, e.computeSvc, project, func(img *compute.Image) bool {
 		return clean.MatchString(img.Name)
 	})
@@ -1741,6 +1742,23 @@ func (e *Environment) ResolveUbuntuVersion(ctx context.Context, release string) 
 	m := versionRe.FindStringSubmatch(best.Name)
 	Expect(m).To(HaveLen(2), "could not extract Ubuntu version from %q", best.Name)
 	return "v" + m[1]
+}
+
+// ExpectedUbuntuDefaultRelease returns the release token ("2204" or "2404") GKE's documented rule
+// gives for the cluster's Kubernetes version, which `osVersion: default` and an omitted osVersion
+// must follow: Ubuntu 22.04 before 1.32.1, Ubuntu 24.04 from 1.32.1 (documented through 1.37; later
+// versions use the documented current default, 24.04).
+func (e *Environment) ExpectedUbuntuDefaultRelease(ctx context.Context) string {
+	serverVer, err := e.KubeClient.Discovery().ServerVersion()
+	Expect(err).NotTo(HaveOccurred(), "getting server version")
+	m := regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)`).FindStringSubmatch(serverVer.GitVersion)
+	Expect(m).To(HaveLen(4), "unexpected server version format: %s", serverVer.GitVersion)
+	minor, _ := strconv.Atoi(m[2])
+	patch, _ := strconv.Atoi(m[3])
+	if minor < 32 || (minor == 32 && patch < 1) {
+		return "2204"
+	}
+	return "2404"
 }
 
 // ResolveUbuntuPerPatchImage independently looks up the per-patch image (gke-<version>-gke<build>-

@@ -80,9 +80,6 @@ func ubuntuOSVersions() []string {
 }
 
 const (
-	// ubuntuPerPatchMaxPages bounds the catalog scan for per-patch images to the newest pages
-	// (500 images each); a missing image is never worth crawling the whole catalog.
-	ubuntuPerPatchMaxPages = 8
 	// ubuntuPerPatchBatchWindow is how far past the newest matching per-patch image the scan keeps
 	// reading to see sibling base builds of the same GKE version, which are published together.
 	ubuntuPerPatchBatchWindow = 24 * time.Hour
@@ -288,7 +285,7 @@ func (u *Ubuntu) findImages(ctx context.Context, version, project, prefix string
 // project, version or release has none. Per-patch images are named
 // gke-<version>-gke<build>-ubuntu-<release>-<minor>-<arch>-vDATE-c-pre and exist only in
 // ubuntuImageProject (GKE 1.36 and later). The lookup follows the catalog-quota rules of the other
-// scans: no server-side filter, newest first, partial responses, a page bound, and a cache.
+// scans: no server-side filter, newest first, partial responses, and a cache. The scan is not page-bounded: the image of a master patch that is a few weeks old sits thousands of images deep, and a bound would silently switch such clusters to the plain image and drift their nodes.
 func (u *Ubuntu) findPerPatch(ctx context.Context, project, kubernetesVersion, version string) (map[string]*compute.Image, error) {
 	if project != ubuntuImageProject {
 		return nil, nil
@@ -312,7 +309,7 @@ func (u *Ubuntu) findPerPatch(ctx context.Context, project, kubernetesVersion, v
 		}
 	}
 	scan := newPerPatchScan(k8sKey, build, u.release, version)
-	if err := scanImagesPages(ctx, u.computeService, project, ubuntuPerPatchMaxPages, scan.visit); err != nil {
+	if err := scanImages(ctx, u.computeService, project, scan.visit); err != nil {
 		return nil, fmt.Errorf("listing per-patch Ubuntu GKE images in %s: %w", project, err)
 	}
 	if u.perPatchCache != nil {

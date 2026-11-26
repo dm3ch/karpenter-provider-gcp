@@ -1055,9 +1055,9 @@ func TestResolveImages_Ubuntu_PerPatchBaseBuilds(t *testing.T) {
 		"a pin without a per-patch image uses the plain image of that date")
 }
 
-// TestResolveImages_Ubuntu_PerPatchCatalogReads protects the catalog quota behavior: one bounded,
-// cached scan; never an unbounded crawl for an image that is not published; and a failed scan
-// degrades to the plain image instead of failing provisioning.
+// TestResolveImages_Ubuntu_PerPatchCatalogReads protects the catalog reads: one cached scan without
+// server-side filters that finds an image however deep it sits, a cached miss, and a failed scan
+// that fails resolution instead of silently selecting the plain image.
 func TestResolveImages_Ubuntu_PerPatchCatalogReads(t *testing.T) {
 	const master = "v1.36.4-gke.2046003"
 	plain := []*compute.Image{
@@ -1067,20 +1067,32 @@ func TestResolveImages_Ubuntu_PerPatchCatalogReads(t *testing.T) {
 		return []*compute.Image{img(fmt.Sprintf("gke-other-%d-ubuntu-2404-1-36-amd64-v20260101-c-pre", page), "2026-10-01T00:00:00.000-08:00")}
 	}
 
-	// The master's image sits beyond the page bound: bounded scan, plain fallback.
+	// The master's image sits far down the catalog, as for a cluster on an old patch: it is still
+	// found. A page bound would silently switch such clusters to the plain image and drift them.
 	deep := &perPatchCatalog{pages: [][]*compute.Image{plain}}
-	for page := 1; page <= 20; page++ { // far beyond any sensible bound
+	for page := 1; page <= 20; page++ {
 		deep.pages = append(deep.pages, filler(page))
 	}
 	deep.pages = append(deep.pages, []*compute.Image{img(patchAMD64, "2026-06-01T00:00:00.000-08:00"), img(patchARM64, "2026-06-01T00:00:00.000-08:00")})
 	got, err := perPatchUbuntu(t, deep, master).ResolveImages(context.Background(), "latest")
 	require.NoError(t, err)
+	require.Equal(t, []string{newProject + patchAMD64, newProject + patchARM64}, imageSources(got))
+
+	// A version with no per-patch image reads the catalog once; the miss is cached, so the next
+	// resolution reads only the plain scan's first page.
+	missing := &perPatchCatalog{pages: [][]*compute.Image{plain, filler(1), filler(2), filler(3)}}
+	u := perPatchUbuntu(t, missing, master)
+	got, err = u.ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
 	require.Equal(t, []string{newProject + plainAMD64, newProject + plainARM64}, imageSources(got))
-	require.LessOrEqual(t, len(deep.requests), 9, "one plain page plus at most 8 per-patch pages; raising the bound is a quota decision")
+	require.Equal(t, 1+len(missing.pages), len(missing.requests), "one plain page plus one pass over the catalog")
+	_, err = u.ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, 2+len(missing.pages), len(missing.requests), "the cached miss must not scan again")
 
 	// A found image is cached: the second resolution reads only the plain scan's first page.
 	hit := &perPatchCatalog{pages: [][]*compute.Image{plain, filler(1), {img(patchAMD64, "2026-11-09T10:00:00.000-08:00"), img(patchARM64, "2026-11-09T10:00:00.000-08:00")}}}
-	u := perPatchUbuntu(t, hit, master)
+	u = perPatchUbuntu(t, hit, master)
 	first, err := u.ResolveImages(context.Background(), "latest")
 	require.NoError(t, err)
 	require.Equal(t, []string{newProject + patchAMD64, newProject + patchARM64}, imageSources(first))

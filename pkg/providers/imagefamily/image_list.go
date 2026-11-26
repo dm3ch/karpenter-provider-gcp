@@ -26,15 +26,8 @@ import (
 // scanImages visits images newest first and stops when visit returns true.
 // Only the current page is retained; server-side filtering is not used.
 func scanImages(ctx context.Context, service *compute.Service, project string, visit func(*compute.Image) bool) error {
-	return scanImagesPages(ctx, service, project, 0, visit)
-}
-
-// scanImagesPages is scanImages bounded to maxPages list calls (0 means unbounded), so a lookup for
-// an image that may not exist cannot crawl the whole catalog. Reaching the bound is not an error:
-// the caller sees only the images visited.
-func scanImagesPages(ctx context.Context, service *compute.Service, project string, maxPages int, visit func(*compute.Image) bool) error {
 	pageToken := ""
-	for pages := 0; maxPages == 0 || pages < maxPages; pages++ {
+	for {
 		call := service.Images.List(project).
 			OrderBy("creationTimestamp desc").
 			Fields(googleapi.Field("nextPageToken,items(name,creationTimestamp,status,deprecated/state)"))
@@ -55,5 +48,4 @@ func scanImagesPages(ctx context.Context, service *compute.Service, project stri
 		}
 		pageToken = page.NextPageToken
 	}
-	return nil
 }
