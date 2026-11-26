@@ -4,7 +4,7 @@ This guide walks you through deploying Karpenter GCP on a GKE cluster using Helm
 
 ## Prerequisites
 
-- A running GKE cluster (Standard mode, Kubernetes 1.28+) that uses kubelet node registration (`VIA_KUBELET`). Karpenter nodes don't register on clusters with control plane node creation; see [Troubleshooting](../troubleshooting.md#nodeclaims-never-register-on-control-plane-node-creation-clusters).
+- A running GKE cluster (Standard mode, Kubernetes 1.28+). Both node creation modes work; see [Node creation](../node-creation.md).
 - `gcloud` CLI configured with project access
 - `kubectl` pointing at your cluster
 - Helm 3.8+ or Helm 4 (OCI chart support)

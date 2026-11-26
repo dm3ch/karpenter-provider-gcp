@@ -17,6 +17,12 @@ The Google-maintained [cloud-provider-gcp implementation](https://github.com/kub
 
 Neither bootstrap identity may re-enroll an already registered NodeClaim. This compatibility fix does not add support for plugin reissuance authenticated with bootstrap credentials after registration; authenticated node self-renewal remains a separate path.
 
+## Enrollment record
+
+After a successful bootstrap approval the controller annotates the approved NodeClaim with `karpenter.k8s.gcp/kubelet-enrolled-at` (RFC 3339 time), once. The [node creation controller](../node-creation.md) creates a `Node` only for claims carrying it, so a `Node` created by the provider still follows an approved kubelet certificate request, and a VM that never boots, never enrolls or is refused never gets one; whatever verification this controller applies to bootstrap requests gates the annotation too. It is written only after the approval write succeeds. If the annotation write fails, the next reconcile retries it for CSRs this controller approved, under the same authorization. Renewals never write it. The annotation is a record, not an authenticator: anyone who can patch NodeClaims can set it, as they can create NodeClaims.
+
+Creating `Node` objects needs `create` on `nodes`, which the chart grants to the controller; the node identity gains no permission.
+
 ## Remaining trust boundary
 
 **This policy does not authenticate the requester as the actual GCE VM.** GKE source pools share a bootstrap username. A holder of one of those bootstrap credentials can still request a pending Karpenter node's identity before registration. Lifecycle, name and zone checks narrow that exposure but do not close it. A Compute lookup confirming an attacker-supplied instance ID would not, by itself, prove requester identity either.

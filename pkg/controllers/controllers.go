@@ -35,6 +35,7 @@ import (
 	nodeclasshash "github.com/karpenter-gcp/karpenter-provider-gcp/pkg/controllers/nodeclass/hash"
 	nodeclassstatus "github.com/karpenter-gcp/karpenter-provider-gcp/pkg/controllers/nodeclass/status"
 	nodeclasstermination "github.com/karpenter-gcp/karpenter-provider-gcp/pkg/controllers/nodeclass/termination"
+	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/controllers/nodecreation"
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/controllers/nodepooltemplate"
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/controllers/providers/instancetype"
 	controllerspricing "github.com/karpenter-gcp/karpenter-provider-gcp/pkg/controllers/providers/pricing"
@@ -42,6 +43,7 @@ import (
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/operator/options"
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/providers/gke"
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/providers/imagefamily"
+	providerinstance "github.com/karpenter-gcp/karpenter-provider-gcp/pkg/providers/instance"
 	providerinstancetype "github.com/karpenter-gcp/karpenter-provider-gcp/pkg/providers/instancetype"
 	providernodepooltemplate "github.com/karpenter-gcp/karpenter-provider-gcp/pkg/providers/nodepooltemplate"
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/providers/offerings/unavailableofferings"
@@ -64,6 +66,7 @@ func NewController(
 	authOptions *auth.Credential,
 	gkeProvider gke.Provider,
 	subnetProvider subnet.Provider,
+	instanceProvider providerinstance.Provider,
 ) []controller.Controller {
 	controllers := []controller.Controller{
 		nodeclassstatus.NewController(kubeClient, imageProvider, gkeProvider, subnetProvider),
@@ -75,6 +78,7 @@ func NewController(
 		controllerspricing.NewController(pricingProvider),
 		nodeclaimgc.NewController(kubeClient, cloudProvider),
 		gcecustommachinetype.NewController(kubeClient, authOptions, gkeProvider),
+		nodecreation.NewController(kubeClient, gkeProvider, recorder, options.FromContext(ctx).ProjectID),
 	}
 
 	if options.FromContext(ctx).Interruption {

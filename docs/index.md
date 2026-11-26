@@ -43,6 +43,7 @@ Key capabilities:
 
 - [GPU nodes](gpu-nodes.md) — GPU instance types, driver version control, and device plugin scheduling
 - [Image selection](image-selection.md) — select node images by GKE release channel, version pin, or raw image ID
+- [Node creation](node-creation.md) — how Karpenter creates the Kubernetes `Node` on GKE clusters with control plane node creation
 - [Node repair](node-repair.md) — automatic replacement of nodes that fail GKE health conditions
 - [Spot preemption notice](spot-preemption.md) — get up to two minutes' warning before GCE reclaims a Spot VM
 - [Static capacity](examples/static-capacity.md) — keep a fixed number of nodes running with `spec.replicas`

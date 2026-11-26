@@ -2,7 +2,7 @@ terraform {
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "6.28.0"
+      version = "7.46.2"
     }
   }
 }
@@ -56,6 +56,17 @@ resource "google_container_cluster" "default" {
 
   release_channel {
     channel = var.release_channel
+  }
+
+  # A floor, not a pin: GKE keeps auto-upgrading within the release channel.
+  min_master_version = var.min_master_version
+
+  # Unset leaves the mode to GKE. Changing it affects only nodes created afterwards.
+  dynamic "node_creation_config" {
+    for_each = var.node_creation_mode == null ? [] : [var.node_creation_mode]
+    content {
+      node_creation_mode = node_creation_config.value
+    }
   }
 
   # GKE bills Cloud Logging and Cloud Monitoring ingestion, and the managed

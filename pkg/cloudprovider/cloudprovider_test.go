@@ -268,6 +268,43 @@ func TestCreateMatchesAdoptedCountOutsideFilteredCandidates(t *testing.T) {
 	}
 }
 
+func TestRecordNodeLabels(t *testing.T) {
+	t.Parallel()
+	c := &CloudProvider{}
+	t.Run("records the launched set without the registration labels", func(t *testing.T) {
+		t.Parallel()
+		nc := &karpv1.NodeClaim{}
+		c.recordNodeLabels(nc, &instance.Instance{KubeLabels: map[string]string{
+			"karpenter.sh/nodepool":        "default",
+			"disk-type.gke.io/pd-ssd":      "true",
+			karpv1.NodeRegisteredLabelKey:  "true",
+			karpv1.NodeInitializedLabelKey: "true",
+		}})
+		require.Equal(t, "disk-type.gke.io/pd-ssd=true,karpenter.sh/nodepool=default", nc.Annotations[v1alpha1.AnnotationNodeLabels],
+			"core copies NodeClaim annotations onto the Node; registered/initialized there would end race protection early")
+	})
+
+	t.Run("empty set is recorded as an empty value", func(t *testing.T) {
+		t.Parallel()
+		nc := &karpv1.NodeClaim{}
+		c.recordNodeLabels(nc, &instance.Instance{KubeLabels: map[string]string{}})
+		value, ok := nc.Annotations[v1alpha1.AnnotationNodeLabels]
+		require.True(t, ok)
+		require.Empty(t, value)
+	})
+
+	t.Run("no usable set records nothing", func(t *testing.T) {
+		t.Parallel()
+		for name, inst := range map[string]*instance.Instance{
+			"item absent": {},
+		} {
+			nc := &karpv1.NodeClaim{}
+			c.recordNodeLabels(nc, inst)
+			require.NotContains(t, nc.Annotations, v1alpha1.AnnotationNodeLabels, name)
+		}
+	})
+}
+
 func TestMatchVariantForInstance_BundledSKUSingleVariant(t *testing.T) {
 	t.Parallel()
 	its := []*karpcloudprovider.InstanceType{

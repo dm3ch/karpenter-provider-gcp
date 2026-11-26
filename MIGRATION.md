@@ -10,6 +10,10 @@ New nodes whose selected bootstrap release is `1.37.2-gke.1325000` or later rese
 
 To keep the earlier values, set `spec.kubeletConfiguration.kubeReserved` `cpu` and `memory` explicitly. See [Default CPU and memory reservations](docs/examples/advanced.md#default-cpu-and-memory-reservations).
 
+### Karpenter creates the Node on GKE control plane node creation clusters
+
+On clusters with `nodeCreationConfig.nodeCreationMode = VIA_CONTROL_PLANE`, GKE does not create a `Node` for Karpenter VMs, so NodeClaims never registered. The controller now creates the `Node` for NodeClaims whose kubelet certificate it approved. The chart adds `create` to the `nodes` rule of the core ClusterRole; operators who manage that ClusterRole themselves must add it. `VIA_KUBELET` clusters see no change: Karpenter never creates a `Node` there. See [Node creation](docs/node-creation.md).
+
 ### Core node bootstrap follows the selected release, not the source pool
 
 **Upgrade CRDs before the controller**, using the separate `karpenter-crd` release or the project's CRD upgrade procedure. Helm does not upgrade CRDs from the controller chart's `crds/` directory. The additive `status.images[].kubernetesVersion` field must be preserved by the schema; otherwise, new launches keep waiting for complete image status. Allow normal NodeClass reconciliation to refresh old rows. Existing VM adoption remains available during that refresh or an artifact outage.

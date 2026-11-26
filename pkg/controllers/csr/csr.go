@@ -38,7 +38,11 @@ import (
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/apis"
+	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/apis/v1alpha1"
 )
+
+// autoApproverReason is the reason on approval conditions this controller writes.
+const autoApproverReason = "KarpenterAutoApprover"
 
 const (
 	nodeUserPrefix            = "system:node:"
@@ -63,11 +67,13 @@ type kubeletClientSubject struct {
 type Controller struct {
 	client     client.Client
 	kubeClient kubernetes.Interface
+	now        func() time.Time
 }
 
 func NewController(kubeClient kubernetes.Interface) *Controller {
 	return &Controller{
 		kubeClient: kubeClient,
+		now:        time.Now,
 	}
 }
 
@@ -90,7 +96,8 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		}
 
 		log.FromContext(ctx).Info("reconciling CSR", "name", csr.Name)
-		if err := validateKubeletClientCSR(&csr, nodeClaimList.Items); err != nil {
+		enrolled, err := authorizeKubeletClientCSR(&csr, nodeClaimList.Items)
+		if err != nil {
 			log.FromContext(ctx).V(1).Info("not approving CSR", "name", csr.Name, "username", csr.Spec.Username, "reason", err.Error())
 			continue
 		}
@@ -99,7 +106,7 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 		csr.Status.Conditions = append(csr.Status.Conditions, certv1.CertificateSigningRequestCondition{
 			Type:           certv1.CertificateApproved,
 			Status:         "True",
-			Reason:         "KarpenterAutoApprover",
+			Reason:         autoApproverReason,
 			Message:        "Automatically approved by Karpenter CSR controller",
 			LastUpdateTime: metav1.Now(),
 		})
@@ -108,37 +115,103 @@ func (c *Controller) Reconcile(ctx context.Context) (reconciler.Result, error) {
 			log.FromContext(ctx).Error(err, "failed to approve CSR", "name", csr.Name)
 			continue
 		}
+		if enrolled != nil {
+			c.recordEnrollment(ctx, enrolled)
+		}
 	}
+	c.recordMissedEnrollments(ctx, csrList.Items, nodeClaimList.Items)
 	return reconciler.Result{RequeueAfter: 30 * time.Second}, nil
 }
 
+// recordEnrollment writes the kubelet-enrolled-at annotation on a NodeClaim whose
+// bootstrap CSR was approved. The node creation controller reads it as proof
+// that the VM's kubelet authenticated before it creates a Node. It is written
+// once; a failed write is retried by recordMissedEnrollments because the approved
+// CSR is not reconsidered by the approval loop.
+func (c *Controller) recordEnrollment(ctx context.Context, nodeClaim *karpv1.NodeClaim) {
+	if _, ok := nodeClaim.Annotations[v1alpha1.AnnotationKubeletEnrolledAt]; ok {
+		return
+	}
+	stored := nodeClaim.DeepCopy()
+	updated := nodeClaim.DeepCopy()
+	if updated.Annotations == nil {
+		updated.Annotations = map[string]string{}
+	}
+	updated.Annotations[v1alpha1.AnnotationKubeletEnrolledAt] = c.now().UTC().Format(time.RFC3339)
+	if err := c.client.Patch(ctx, updated, client.MergeFromWithOptions(stored, client.MergeFromWithOptimisticLock{})); err != nil {
+		log.FromContext(ctx).Error(err, "failed to record kubelet enrollment on NodeClaim", "nodeClaim", nodeClaim.Name)
+		return
+	}
+	log.FromContext(ctx).Info("recorded kubelet enrollment", "nodeClaim", nodeClaim.Name)
+}
+
+// recordMissedEnrollments records enrollment for NodeClaims whose bootstrap CSR this
+// controller already approved but whose annotation write failed. It applies the
+// same authorization as approval, so a claim that has since registered, or a CSR
+// that was approved by someone else, never gets the annotation.
+func (c *Controller) recordMissedEnrollments(ctx context.Context, csrs []certv1.CertificateSigningRequest, nodeClaims []karpv1.NodeClaim) {
+	var pending []karpv1.NodeClaim
+	for i := range nodeClaims {
+		if _, ok := nodeClaims[i].Annotations[v1alpha1.AnnotationKubeletEnrolledAt]; !ok {
+			pending = append(pending, nodeClaims[i])
+		}
+	}
+	if len(pending) == 0 {
+		return
+	}
+	for i := range csrs {
+		if !approvedByController(&csrs[i]) {
+			continue
+		}
+		if enrolled, err := authorizeKubeletClientCSR(&csrs[i], pending); err == nil && enrolled != nil {
+			c.recordEnrollment(ctx, enrolled)
+		}
+	}
+}
+
+func approvedByController(csr *certv1.CertificateSigningRequest) bool {
+	for _, cond := range csr.Status.Conditions {
+		if cond.Type == certv1.CertificateApproved && cond.Reason == autoApproverReason {
+			return true
+		}
+	}
+	return false
+}
+
 func validateKubeletClientCSR(csr *certv1.CertificateSigningRequest, nodeClaims []karpv1.NodeClaim) error {
+	_, err := authorizeKubeletClientCSR(csr, nodeClaims)
+	return err
+}
+
+// authorizeKubeletClientCSR validates a kubelet client CSR. For a bootstrap
+// request it also returns the NodeClaim the request enrolls; renewals return nil.
+func authorizeKubeletClientCSR(csr *certv1.CertificateSigningRequest, nodeClaims []karpv1.NodeClaim) (*karpv1.NodeClaim, error) {
 	if csr.Spec.SignerName != certv1.KubeAPIServerClientKubeletSignerName {
-		return fmt.Errorf("signer %q is not %q", csr.Spec.SignerName, certv1.KubeAPIServerClientKubeletSignerName)
+		return nil, fmt.Errorf("signer %q is not %q", csr.Spec.SignerName, certv1.KubeAPIServerClientKubeletSignerName)
 	}
 
 	usages := sets.New(csr.Spec.Usages...)
 	if !usages.IsSuperset(requiredUsages) || !allowedUsages.IsSuperset(usages) {
-		return fmt.Errorf("usages %v are not valid for a kubelet client certificate", csr.Spec.Usages)
+		return nil, fmt.Errorf("usages %v are not valid for a kubelet client certificate", csr.Spec.Usages)
 	}
 
 	subject, err := parseKubeletClientRequest(csr.Spec.Request)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	groups := sets.New(csr.Spec.Groups...)
 	if subject.nodePoolOrg != "" && !groups.Has(subject.nodePoolOrg) {
-		return fmt.Errorf("requester %q is not in group %q", csr.Spec.Username, subject.nodePoolOrg)
+		return nil, fmt.Errorf("requester %q is not in group %q", csr.Spec.Username, subject.nodePoolOrg)
 	}
 
 	switch csr.Spec.Username {
 	case nodeUserPrefix + subject.nodeName:
-		return validateRenewal(subject, groups, nodeClaims)
+		return nil, validateRenewal(subject, groups, nodeClaims)
 	case nodePoolBootstrapUsername, tpmBootstrapUsername:
 		return validateBootstrap(subject, nodeClaims)
 	default:
-		return fmt.Errorf("requester %q cannot request a certificate for node %q", csr.Spec.Username, subject.nodeName)
+		return nil, fmt.Errorf("requester %q cannot request a certificate for node %q", csr.Spec.Username, subject.nodeName)
 	}
 }
 
@@ -159,7 +232,7 @@ func validateRenewal(subject kubeletClientSubject, groups sets.Set[string], node
 	return fmt.Errorf("no NodeClaim is registered as node %q", subject.nodeName)
 }
 
-func validateBootstrap(subject kubeletClientSubject, nodeClaims []karpv1.NodeClaim) error {
+func validateBootstrap(subject kubeletClientSubject, nodeClaims []karpv1.NodeClaim) (*karpv1.NodeClaim, error) {
 	for i := range nodeClaims {
 		nc := &nodeClaims[i]
 		zone, instance := parseProviderID(nc.Status.ProviderID)
@@ -167,17 +240,17 @@ func validateBootstrap(subject kubeletClientSubject, nodeClaims []karpv1.NodeCla
 			continue
 		}
 		if !nc.DeletionTimestamp.IsZero() || !nc.StatusConditions().Get(karpv1.ConditionTypeLaunched).IsTrue() {
-			return fmt.Errorf("NodeClaim %q is deleting or has not launched", nc.Name)
+			return nil, fmt.Errorf("NodeClaim %q is deleting or has not launched", nc.Name)
 		}
 		if nc.Status.NodeName != "" || nc.StatusConditions().Get(karpv1.ConditionTypeRegistered).IsTrue() {
-			return fmt.Errorf("NodeClaim %q for node %q is already registered", nc.Name, subject.nodeName)
+			return nil, fmt.Errorf("NodeClaim %q for node %q is already registered", nc.Name, subject.nodeName)
 		}
 		if subject.instanceOrg != "" && instanceOrgZone(subject.instanceOrg) != zone {
-			return fmt.Errorf("subject organization %q is not in NodeClaim %q zone %q", subject.instanceOrg, nc.Name, zone)
+			return nil, fmt.Errorf("subject organization %q is not in NodeClaim %q zone %q", subject.instanceOrg, nc.Name, zone)
 		}
-		return nil
+		return nc, nil
 	}
-	return fmt.Errorf("no NodeClaim was launched for node %q", subject.nodeName)
+	return nil, fmt.Errorf("no NodeClaim was launched for node %q", subject.nodeName)
 }
 
 func isManagedNodeClaim(nc *karpv1.NodeClaim) bool {

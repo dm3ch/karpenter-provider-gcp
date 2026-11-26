@@ -161,6 +161,22 @@ var (
 	AnnotationClusterNameTaggedCompatability = apis.CompatibilityGroup + "/cluster-name-tagged"
 	AnnotationGCENodeClassHashVersion        = apis.Group + "/gcenodeclass-hash-version"
 	AnnotationInstanceTagged                 = apis.Group + "/tagged"
+	// AnnotationKubeletEnrolledAt records, as RFC 3339 time, when the CSR controller
+	// approved the bootstrap kubelet client certificate of a launched NodeClaim. The
+	// node creation controller treats it as proof that the VM's kubelet authenticated.
+	AnnotationKubeletEnrolledAt = apis.Group + "/kubelet-enrolled-at"
+	// AnnotationNodeLabels records, as a sorted comma-separated key=value list, the
+	// kube-labels set the provider launched the VM with, minus the registration
+	// labels only core may add. CloudProvider.Create writes it once; the node
+	// creation controller is its only reader. Core copies NodeClaim annotations onto
+	// the Node at registration, where it is inert.
+	AnnotationNodeLabels = apis.Group + "/node-labels"
+	// AnnotationNodeCreatedBy marks a Node created by this provider instead of the
+	// kubelet or GKE's control plane.
+	AnnotationNodeCreatedBy = apis.Group + "/created-by"
+	// NodeCreatedByController is the AnnotationNodeCreatedBy value for the node
+	// creation controller.
+	NodeCreatedByController = "nodecreation-controller"
 
 	TagNodeClaim = coreapis.Group + "/nodeclaim"
 	TagName      = "Name"

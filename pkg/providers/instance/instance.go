@@ -458,6 +458,22 @@ func (p *DefaultProvider) adoptExistingInstance(ctx context.Context, existingIns
 	}
 }
 
+// launchedKubeLabels returns the kube-labels set a VM is launched with, read from
+// the instance Create just built. It reads that one metadata item only: the rest of
+// the metadata carries kube-env and is never retained. It is nil when the item is
+// absent.
+func launchedKubeLabels(inst *compute.Instance) map[string]string {
+	if inst.Metadata == nil {
+		return nil
+	}
+	for _, item := range inst.Metadata.Items {
+		if item != nil && item.Key == metadata.KubeLabelsKey {
+			return parseLabelString(lo.FromPtr(item.Value))
+		}
+	}
+	return nil
+}
+
 // Adopt looks up a VM from an earlier attempt without launching or resolving images.
 // A missing VM returns (nil, nil).
 func (p *DefaultProvider) Adopt(ctx context.Context, nodeClaim *karpv1.NodeClaim) (*Instance, error) {
@@ -564,7 +580,7 @@ func (p *DefaultProvider) createWithCapacityType(ctx context.Context, nodeClass 
 			"zone", zone, "projectID", p.projectID, "region", p.region, "providerID", instance.Name, "providerID", instance.Name,
 			"Labels", instance.Labels, "Tags", instance.Tags, "Status", instance.Status)
 
-		return &Instance{
+		created := &Instance{
 			InstanceID: instance.Name,
 			Name:       instance.Name,
 			// Refer to https://github.com/karpenter-gcp/karpenter-provider-gcp/pull/45#discussion_r2115586327
@@ -579,7 +595,9 @@ func (p *DefaultProvider) createWithCapacityType(ctx context.Context, nodeClass 
 			Tags:         instance.Labels,
 			Labels:       instance.Labels,
 			Status:       InstanceStatusProvisioning,
-		}, nil, nil
+		}
+		created.KubeLabels = launchedKubeLabels(instance)
+		return created, nil, nil
 	}
 	return nil, errs, nil
 }
@@ -1491,10 +1509,15 @@ func gpuInstanceMetadata(nodeClass *v1alpha1.GCENodeClass, instanceType *cloudpr
 		labels[v1alpha1.LabelGKEMaxSharedClientsPerGPU] = fmt.Sprintf("%d", sharing.MaxSharedClientsPerGPU)
 	}
 
+	return labels, gpuTaints(nodeClass)
+}
+
+// gpuTaints returns the taints a GPU node carries at launch.
+func gpuTaints(nodeClass *v1alpha1.GCENodeClass) []corev1.Taint {
 	if nodeClass.Spec.AutoGPUTaint {
-		return labels, []corev1.Taint{{Key: "nvidia.com/gpu", Value: "present", Effect: corev1.TaintEffectNoSchedule}}
+		return []corev1.Taint{{Key: "nvidia.com/gpu", Value: "present", Effect: corev1.TaintEffectNoSchedule}}
 	}
-	return labels, nil
+	return nil
 }
 
 // setupServiceAccounts configures service accounts for the instance.
