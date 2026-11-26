@@ -22,9 +22,13 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/patrickmn/go-cache"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/api/compute/v1"
 	k8sversion "k8s.io/apimachinery/pkg/util/version"
@@ -488,8 +492,11 @@ func TestResolveImages_Ubuntu_ListsProjectForClusterMinor(t *testing.T) {
 			got, err := p.ResolveImages(context.Background(), "latest")
 			require.NoError(t, err)
 			require.Equal(t, tt.want, imageSources(got))
-			require.Equal(t, []string{strings.Split(strings.TrimPrefix(tt.want[0], "projects/"), "/")[0]}, *listed,
-				"only the selected project may be listed")
+			project := strings.Split(strings.TrimPrefix(tt.want[0], "projects/"), "/")[0]
+			require.NotEmpty(t, *listed)
+			for _, listedProject := range *listed {
+				require.Equal(t, project, listedProject, "only the selected project may be listed")
+			}
 		})
 	}
 }
@@ -871,4 +878,226 @@ func TestListUbuntuOSVersionDefault(t *testing.T) {
 	require.True(t, IsImageResolutionError(err))
 	require.ErrorContains(t, err, "ubuntu-gke-2404")
 	require.ErrorContains(t, err, "osVersion default selected Ubuntu 24.04")
+}
+
+// perPatchCatalog serves image list pages newest first, like images.list ordered by creationTimestamp
+// descending, and records every request so tests can assert how the catalog was read.
+type perPatchCatalog struct {
+	pages    [][]*compute.Image
+	failPage int // 1-based page index that returns an error; 0 for none
+	requests []url.Values
+}
+
+func (c *perPatchCatalog) server(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c.requests = append(c.requests, r.URL.Query())
+		page := 0
+		if token := r.URL.Query().Get("pageToken"); token != "" {
+			page, _ = strconv.Atoi(token)
+		}
+		if c.failPage != 0 && page+1 == c.failPage {
+			http.Error(w, "quota exceeded", http.StatusForbidden)
+			return
+		}
+		list := &compute.ImageList{}
+		if page < len(c.pages) {
+			list.Items = readyTestImages(c.pages[page])
+			if page+1 < len(c.pages) {
+				list.NextPageToken = strconv.Itoa(page + 1)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(list)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+func perPatchUbuntu(t *testing.T, catalog *perPatchCatalog, clusterVersion string) *Ubuntu {
+	t.Helper()
+	return &Ubuntu{
+		computeService:  buildComputeService(t, catalog.server(t)),
+		versionProvider: &fakeVersionProvider{version: clusterVersion},
+		release:         "2404",
+		perPatchCache:   cache.New(time.Hour, time.Minute),
+	}
+}
+
+func img(name, created string) *compute.Image {
+	return &compute.Image{Name: name, CreationTimestamp: created}
+}
+
+const (
+	plainAMD64 = "ubuntu-gke-2404-1-36-amd64-v20261117"
+	plainARM64 = "ubuntu-gke-2404-1-36-arm64-v20261117"
+	patchAMD64 = "gke-1364-gke2046003-ubuntu-2404-1-36-amd64-v20260914-c-pre"
+	patchARM64 = "gke-1364-gke2046003-ubuntu-2404-1-36-arm64-v20260914-c-pre"
+	newProject = "projects/gke-ubuntu-node-images/global/images/"
+)
+
+// TestResolveImages_Ubuntu_PerPatchImage protects the per-patch image selection: the image GKE
+// publishes for the exact master version wins over the plain image, per architecture, only the
+// clean variant of the right release counts, and nothing falls back silently to another version.
+func TestResolveImages_Ubuntu_PerPatchImage(t *testing.T) {
+	const master = "v1.36.4-gke.2046003"
+	catalog := &perPatchCatalog{pages: [][]*compute.Image{{
+		img(plainARM64, "2026-11-17T19:12:00.000-08:00"),
+		img(plainAMD64, "2026-11-17T19:05:00.000-08:00"),
+		// another GKE version and release, and variants of the master's own image: never selected
+		img("gke-1365-gke2391000-ubuntu-2404-1-36-amd64-v20260528-c-pre", "2026-11-10T10:06:57.762-08:00"),
+		img("gke-1364-gke2046003-ubuntu-2604-1-38-amd64-v20260914-c-pre", "2026-11-09T10:00:00.000-08:00"),
+		img("gke-1364-gke2046003-ubuntu-2404-1-36-amd64-v20260914-hwe-c-pre", "2026-11-09T10:00:00.000-08:00"),
+		img("gke-1364-gke2046003-ubuntu-2404-1-36-arm64-v20260914-64k-c-pre", "2026-11-09T10:00:00.000-08:00"),
+		img("gke-1364-gke20460031-ubuntu-2404-1-36-amd64-v20260914-c-pre", "2026-11-09T10:00:00.000-08:00"),
+		img(patchARM64, "2026-11-09T10:00:05.000-08:00"),
+		img(patchAMD64, "2026-11-09T10:00:00.000-08:00"),
+	}}}
+	got, err := perPatchUbuntu(t, catalog, master).ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, []string{newProject + patchAMD64, newProject + patchARM64}, imageSources(got))
+	for _, image := range got {
+		require.Equal(t, "1.36.4-gke.2046003", image.KubernetesVersion)
+	}
+	for _, query := range catalog.requests {
+		require.Empty(t, query.Get("filter"), "image catalog reads must not use server-side filters")
+		require.NotEmpty(t, query.Get("fields"), "image catalog reads must use partial responses")
+	}
+
+	// A master version with no per-patch image uses the plain images.
+	got, err = perPatchUbuntu(t, catalog, "v1.36.9-gke.1234567").ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, []string{newProject + plainAMD64, newProject + plainARM64}, imageSources(got))
+
+	// Each architecture is resolved independently.
+	onlyAMD64 := &perPatchCatalog{pages: [][]*compute.Image{{
+		img(plainARM64, "2026-11-17T19:12:00.000-08:00"), img(plainAMD64, "2026-11-17T19:05:00.000-08:00"), img(patchAMD64, "2026-11-09T10:00:00.000-08:00"),
+	}}}
+	got, err = perPatchUbuntu(t, onlyAMD64, master).ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, []string{newProject + patchAMD64, newProject + plainARM64}, imageSources(got))
+
+	// A non-GKE version string never looks for per-patch images: one plain page is all it reads.
+	plainOnly := &perPatchCatalog{pages: [][]*compute.Image{{
+		img(plainARM64, "2026-11-17T19:12:00.000-08:00"), img(plainAMD64, "2026-11-17T19:05:00.000-08:00"), img(patchAMD64, "2026-11-09T10:00:00.000-08:00"),
+	}}}
+	got, err = perPatchUbuntu(t, plainOnly, "v1.36.4").ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, []string{newProject + plainAMD64, newProject + plainARM64}, imageSources(got))
+	require.Len(t, plainOnly.requests, 1)
+
+	// The legacy project (GKE before 1.36) has no per-patch images: plain images, one page.
+	legacy := &perPatchCatalog{pages: [][]*compute.Image{{
+		img("ubuntu-gke-2404-1-35-arm64-v20261113", "2026-11-13T00:05:00.000-08:00"), img("ubuntu-gke-2404-1-35-amd64-v20261113", "2026-11-13T00:00:00.000-08:00"),
+		img("gke-1359-gke1673000-ubuntu-2404-1-35-amd64-v20261113-c-pre", "2026-11-12T00:00:00.000-08:00"),
+	}}}
+	got, err = perPatchUbuntu(t, legacy, "v1.35.9-gke.1673000").ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, []string{
+		"projects/ubuntu-os-gke-cloud/global/images/ubuntu-gke-2404-1-35-amd64-v20261113",
+		"projects/ubuntu-os-gke-cloud/global/images/ubuntu-gke-2404-1-35-arm64-v20261113",
+	}, imageSources(got))
+	require.Len(t, legacy.requests, 1)
+}
+
+// TestResolveImages_Ubuntu_PerPatchBaseBuilds protects choosing among several base builds of one
+// GKE version: the newest base date for "latest", exactly the pinned date for a pin, and the plain
+// image of the pinned date when GKE has no per-patch image for it.
+func TestResolveImages_Ubuntu_PerPatchBaseBuilds(t *testing.T) {
+	const master = "v1.36.5-gke.1089000"
+	name := func(date, arch string) string {
+		return "gke-1365-gke1089000-ubuntu-2404-1-36-" + arch + "-" + date + "-c-pre"
+	}
+	catalog := &perPatchCatalog{pages: [][]*compute.Image{{
+		img("ubuntu-gke-2404-1-36-arm64-v20261117", "2026-11-17T19:12:00.000-08:00"),
+		img("ubuntu-gke-2404-1-36-amd64-v20261117", "2026-11-17T19:05:00.000-08:00"),
+		img("ubuntu-gke-2404-1-36-arm64-v20260528", "2026-11-12T00:00:00.000-08:00"),
+		img("ubuntu-gke-2404-1-36-amd64-v20260528", "2026-11-12T00:00:00.000-08:00"),
+		// published together; the older base date is listed first
+		img(name("v20260528", "amd64"), "2026-11-10T10:00:03.000-08:00"),
+		img(name("v20261006", "amd64"), "2026-11-10T10:00:02.000-08:00"),
+		img(name("v20261006a", "amd64"), "2026-11-10T10:00:01.000-08:00"),
+		img(name("v20260528", "arm64"), "2026-11-10T10:00:00.500-08:00"),
+		img(name("v20261006", "arm64"), "2026-11-10T10:00:00.000-08:00"),
+	}}}
+	resolve := func(version string) []string {
+		got, err := perPatchUbuntu(t, catalog, master).ResolveImages(context.Background(), version)
+		require.NoError(t, err, version)
+		return imageSources(got)
+	}
+	require.Equal(t, []string{newProject + name("v20261006a", "amd64"), newProject + name("v20261006", "arm64")}, resolve("latest"),
+		"the newest base build wins, including a date letter, independently per architecture")
+	require.Equal(t, []string{newProject + name("v20260528", "amd64"), newProject + name("v20260528", "arm64")}, resolve("v20260528"))
+	require.Equal(t, []string{newProject + "ubuntu-gke-2404-1-36-amd64-v20261117", newProject + "ubuntu-gke-2404-1-36-arm64-v20261117"}, resolve("v20261117"),
+		"a pin without a per-patch image uses the plain image of that date")
+}
+
+// TestResolveImages_Ubuntu_PerPatchCatalogReads protects the catalog quota behavior: one bounded,
+// cached scan; never an unbounded crawl for an image that is not published; and a failed scan
+// degrades to the plain image instead of failing provisioning.
+func TestResolveImages_Ubuntu_PerPatchCatalogReads(t *testing.T) {
+	const master = "v1.36.4-gke.2046003"
+	plain := []*compute.Image{
+		img(plainARM64, "2026-11-17T19:12:00.000-08:00"), img(plainAMD64, "2026-11-17T19:05:00.000-08:00"),
+	}
+	filler := func(page int) []*compute.Image {
+		return []*compute.Image{img(fmt.Sprintf("gke-other-%d-ubuntu-2404-1-36-amd64-v20260101-c-pre", page), "2026-10-01T00:00:00.000-08:00")}
+	}
+
+	// The master's image sits beyond the page bound: bounded scan, plain fallback.
+	deep := &perPatchCatalog{pages: [][]*compute.Image{plain}}
+	for page := 1; page <= 20; page++ { // far beyond any sensible bound
+		deep.pages = append(deep.pages, filler(page))
+	}
+	deep.pages = append(deep.pages, []*compute.Image{img(patchAMD64, "2026-06-01T00:00:00.000-08:00"), img(patchARM64, "2026-06-01T00:00:00.000-08:00")})
+	got, err := perPatchUbuntu(t, deep, master).ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, []string{newProject + plainAMD64, newProject + plainARM64}, imageSources(got))
+	require.LessOrEqual(t, len(deep.requests), 9, "one plain page plus at most 8 per-patch pages; raising the bound is a quota decision")
+
+	// A found image is cached: the second resolution reads only the plain scan's first page.
+	hit := &perPatchCatalog{pages: [][]*compute.Image{plain, filler(1), {img(patchAMD64, "2026-11-09T10:00:00.000-08:00"), img(patchARM64, "2026-11-09T10:00:00.000-08:00")}}}
+	u := perPatchUbuntu(t, hit, master)
+	first, err := u.ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, []string{newProject + patchAMD64, newProject + patchARM64}, imageSources(first))
+	before := len(hit.requests)
+	second, err := u.ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, imageSources(first), imageSources(second))
+	require.Equal(t, 1, len(hit.requests)-before, "the cached per-patch lookup must not read the catalog again")
+
+	// A failing deeper page must not fail provisioning.
+	failing := &perPatchCatalog{pages: [][]*compute.Image{plain, filler(1), filler(2)}, failPage: 2}
+	got, err = perPatchUbuntu(t, failing, master).ResolveImages(context.Background(), "latest")
+	require.NoError(t, err)
+	require.Equal(t, []string{newProject + plainAMD64, newProject + plainARM64}, imageSources(got))
+}
+
+// TestSameImage_UbuntuBuild protects drift across packaging: the plain and the per-patch image of
+// one OS build, in either Ubuntu project, are the same image, while a different base date, release,
+// architecture or image minor is not.
+func TestSameImage_UbuntuBuild(t *testing.T) {
+	const api = "https://www.googleapis.com/compute/v1/"
+	plain := newProject + "ubuntu-gke-2404-1-36-amd64-v20260914"
+	patch := newProject + "gke-1364-gke2046003-ubuntu-2404-1-36-amd64-v20260914-c-pre"
+	require.True(t, SameImage(api+plain, patch), "running the plain image, status now the per-patch image")
+	require.True(t, SameImage(api+patch, plain), "running the per-patch image, status now the plain image")
+	require.True(t, SameImage(api+"projects/ubuntu-os-gke-cloud/global/images/ubuntu-gke-2404-1-36-amd64-v20260914", patch), "legacy project")
+	// per-patch images of different GKE versions share one base build
+	require.True(t, SameImage(api+newProject+"gke-1365-gke2391000-ubuntu-2404-1-36-amd64-v20260914-c-pre", patch))
+
+	for _, other := range []string{
+		"ubuntu-gke-2404-1-36-amd64-v20261117",                           // other base date
+		"ubuntu-gke-2404-1-36-arm64-v20260914",                           // other architecture
+		"ubuntu-gke-2604-1-36-amd64-v20260914",                           // other release
+		"ubuntu-gke-2404-1-37-amd64-v20260914",                           // other image minor
+		"gke-1364-gke2046003-ubuntu-2404-1-36-amd64-v20260914-hwe-c-pre", // variant
+	} {
+		require.False(t, SameImage(api+plain, newProject+other), other)
+	}
+	require.False(t, SameImage(api+"projects/other/global/images/ubuntu-gke-2404-1-36-amd64-v20260914", patch), "unrelated project")
+	// 22.04 amd64 names carry no arch token
+	require.True(t, SameImage(api+"projects/ubuntu-os-gke-cloud/global/images/ubuntu-gke-2204-1-31-v20260810",
+		"projects/gke-ubuntu-node-images/global/images/ubuntu-gke-2204-1-31-v20260810"))
 }

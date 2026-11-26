@@ -87,11 +87,15 @@ type DefaultProvider struct {
 // resolution; pass a no-op implementation if channel: terms are not needed.
 func NewDefaultProvider(computeService *compute.Service, versionProvider versionprovider.Provider, gkeProvider gke.Provider) *DefaultProvider {
 	cos := &ContainerOptimizedOS{computeService: computeService, versionProvider: versionProvider}
-	ubuntu := make(map[string]ImageFamily, len(ubuntuReleases))
-	for release := range ubuntuReleases {
-		ubuntu[release] = &Ubuntu{computeService: computeService, versionProvider: versionProvider, release: release}
+	perPatchCache := cache.New(ubuntuPerPatchHitTTL, imageCacheCleanupInterval)
+	newUbuntu := func(release string) *Ubuntu {
+		return &Ubuntu{computeService: computeService, versionProvider: versionProvider, release: release, perPatchCache: perPatchCache}
 	}
-	ubuntu[ubuntuReleaseDefault] = &Ubuntu{computeService: computeService, versionProvider: versionProvider, release: ubuntuReleaseDefault}
+	ubuntu := make(map[string]ImageFamily, len(ubuntuReleases)+1)
+	for release := range ubuntuReleases {
+		ubuntu[release] = newUbuntu(release)
+	}
+	ubuntu[ubuntuReleaseDefault] = newUbuntu(ubuntuReleaseDefault)
 	return &DefaultProvider{
 		cache:           cache.New(imageCacheTTL, imageCacheCleanupInterval),
 		computeService:  computeService,

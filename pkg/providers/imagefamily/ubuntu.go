@@ -22,7 +22,9 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
+	"github.com/patrickmn/go-cache"
 	"google.golang.org/api/compute/v1"
 	v1 "k8s.io/api/core/v1"
 	k8sversion "k8s.io/apimachinery/pkg/util/version"
@@ -78,6 +80,17 @@ func ubuntuOSVersions() []string {
 }
 
 const (
+	// ubuntuPerPatchMaxPages bounds the catalog scan for per-patch images to the newest pages
+	// (500 images each); a missing image is never worth crawling the whole catalog.
+	ubuntuPerPatchMaxPages = 8
+	// ubuntuPerPatchBatchWindow is how far past the newest matching per-patch image the scan keeps
+	// reading to see sibling base builds of the same GKE version, which are published together.
+	ubuntuPerPatchBatchWindow = 24 * time.Hour
+	// Per-patch image names are immutable and encode the GKE version, so hits are cached long; misses
+	// (not yet published) are retried sooner.
+	ubuntuPerPatchHitTTL  = time.Hour
+	ubuntuPerPatchMissTTL = 10 * time.Minute
+
 	// ubuntuReleaseDefault is the osVersion "default": the release GKE uses for the cluster version.
 	ubuntuReleaseDefault = "default"
 	// ubuntuDefaultVerifiedMinor is the highest Kubernetes 1.x minor whose GKE default Ubuntu
@@ -167,6 +180,8 @@ type Ubuntu struct {
 	versionProvider versionprovider.Provider
 	release         string
 	defaulted       bool // release was chosen by osVersion "default"
+	// perPatchCache remembers per-patch image lookups across resolutions; nil disables caching.
+	perPatchCache *cache.Cache
 }
 
 func (u *Ubuntu) imagePrefix() string {
@@ -194,27 +209,34 @@ func (u *Ubuntu) ResolveImages(ctx context.Context, version string) (Images, err
 	if err != nil {
 		return nil, err
 	}
-	images, err := u.findImages(ctx, version, project, prefix)
+	plain, err := u.findImages(ctx, version, project, prefix)
 	if err != nil {
 		log.FromContext(ctx).Error(err, "failed to resolve Ubuntu GKE image from image project")
 		return Images{}, err
 	}
+	// Prefer the per-patch image GKE publishes for the exact master version: it carries that
+	// release's components preloaded, which is what GKE node pools boot, and starts nodes much
+	// faster. It is an optimization, so a failed or empty lookup falls back to the plain image.
+	perPatch, err := u.findPerPatch(ctx, project, kubernetesVersion, version)
+	if err != nil {
+		log.FromContext(ctx).Error(err, "failed to look up per-patch Ubuntu images; using the plain images")
+	}
 
-	// A missing architecture (incl. a pinned date absent for one arch) fails resolution instead of
-	// producing a single-arch set that reads as ImagesReady=True.
+	return u.imagesFor(plain, perPatch, project, kubernetesVersion, version)
+}
+
+// imagesFor picks the image for each architecture, the per-patch one when there is one. A missing
+// architecture (including a pinned date absent for one arch) fails resolution instead of producing
+// a single-arch set that reads as ImagesReady=True.
+func (u *Ubuntu) imagesFor(plain, perPatch map[string]*compute.Image, project, kubernetesVersion, version string) (Images, error) {
 	ret := Images{}
 	for _, arch := range ubuntuArchitectures {
-		img, ok := images[arch]
+		img, ok := perPatch[arch]
 		if !ok {
-			msg := fmt.Sprintf("no %s %s image found for version %q in %s",
-				u.imagePrefix(), arch, version, project)
-			if u.defaulted {
-				msg += fmt.Sprintf("; osVersion default selected Ubuntu %s.%s for Kubernetes %s", u.release[:2], u.release[2:], kubernetesVersion)
-			}
-			if hint := ubuntuReleases[u.release].hint; hint != "" {
-				msg += "; " + hint
-			}
-			return nil, &imageResolutionError{msg: msg}
+			img, ok = plain[arch]
+		}
+		if !ok {
+			return nil, u.noImageError(arch, version, project, kubernetesVersion)
 		}
 		ret = append(ret, Image{
 			SourceImage:       fmt.Sprintf("projects/%s/global/images/%s", project, img.Name),
@@ -223,6 +245,19 @@ func (u *Ubuntu) ResolveImages(ctx context.Context, version string) (Images, err
 		})
 	}
 	return ret, nil
+}
+
+// noImageError explains why no image exists for arch, naming the release and project, whether the
+// release came from osVersion default, and any known catalog limit of the release.
+func (u *Ubuntu) noImageError(arch, version, project, kubernetesVersion string) error {
+	msg := fmt.Sprintf("no %s %s image found for version %q in %s", u.imagePrefix(), arch, version, project)
+	if u.defaulted {
+		msg += fmt.Sprintf("; osVersion default selected Ubuntu %s.%s for Kubernetes %s", u.release[:2], u.release[2:], kubernetesVersion)
+	}
+	if hint := ubuntuReleases[u.release].hint; hint != "" {
+		msg += "; " + hint
+	}
+	return &imageResolutionError{msg: msg}
 }
 
 // findImages returns the newest usable image for each architecture ("latest"), or the exact-date
@@ -244,6 +279,99 @@ func (u *Ubuntu) findImages(ctx context.Context, version, project, prefix string
 		return nil, fmt.Errorf("listing Ubuntu GKE images in %s: %w", project, err)
 	}
 	return found, nil
+}
+
+// findPerPatch returns, per architecture, the newest usable per-patch image GKE publishes for the
+// exact GKE version of the cluster master (a pin selects its base build), or nothing when the
+// project, version or release has none. Per-patch images are named
+// gke-<version>-gke<build>-ubuntu-<release>-<minor>-<arch>-vDATE-c-pre and exist only in
+// ubuntuImageProject (GKE 1.36 and later). The lookup follows the catalog-quota rules of the other
+// scans: no server-side filter, newest first, partial responses, a page bound, and a cache.
+func (u *Ubuntu) findPerPatch(ctx context.Context, project, kubernetesVersion, version string) (map[string]*compute.Image, error) {
+	if project != ubuntuImageProject {
+		return nil, nil
+	}
+	k8sKey, build, ok := ParseGKEVersion(kubernetesVersion)
+	if !ok {
+		return nil, nil
+	}
+	cacheKey := strings.Join([]string{project, u.release, kubernetesVersion, version}, "|")
+	if u.perPatchCache != nil {
+		if hit, ok := u.perPatchCache.Get(cacheKey); ok {
+			return hit.(map[string]*compute.Image), nil
+		}
+	}
+	scan := newPerPatchScan(k8sKey, build, u.release, version)
+	if err := scanImagesPages(ctx, u.computeService, project, ubuntuPerPatchMaxPages, scan.visit); err != nil {
+		return nil, fmt.Errorf("listing per-patch Ubuntu GKE images in %s: %w", project, err)
+	}
+	if u.perPatchCache != nil {
+		ttl := ubuntuPerPatchHitTTL
+		if len(scan.found) == 0 {
+			ttl = ubuntuPerPatchMissTTL
+		}
+		u.perPatchCache.Set(cacheKey, scan.found, ttl)
+	}
+	return scan.found, nil
+}
+
+// perPatchScan selects, while images are visited newest first, the newest base build of the
+// per-patch image of one GKE version for each architecture.
+type perPatchScan struct {
+	names   map[string]*regexp.Regexp // by architecture; group 1 is the base date
+	version string                    // "latest" or a pinned base date
+	found   map[string]*compute.Image
+	dates   map[string]string
+	floor   time.Time // creation time of the oldest image selected so far
+}
+
+func newPerPatchScan(k8sKey, build, release, version string) *perPatchScan {
+	s := &perPatchScan{
+		names:   make(map[string]*regexp.Regexp, len(ubuntuArchitectures)),
+		version: version,
+		found:   make(map[string]*compute.Image, len(ubuntuArchitectures)),
+		dates:   make(map[string]string, len(ubuntuArchitectures)),
+	}
+	for _, arch := range ubuntuArchitectures {
+		s.names[arch] = regexp.MustCompile(fmt.Sprintf(`^gke-%s-gke%s-ubuntu-%s-\d+-\d+-%s-(v\d{8}[a-z]?)-c-pre$`,
+			regexp.QuoteMeta(k8sKey), regexp.QuoteMeta(build), release, arch))
+	}
+	return s
+}
+
+// visit reports true once the scan is past the batch that published the version's images.
+func (s *perPatchScan) visit(img *compute.Image) bool {
+	created, timeErr := time.Parse(time.RFC3339, img.CreationTimestamp)
+	if s.pastBatch(created, timeErr) {
+		return true
+	}
+	if imageUsable(img) {
+		for _, arch := range ubuntuArchitectures {
+			s.consider(arch, img, created, timeErr)
+		}
+	}
+	return false
+}
+
+// pastBatch reports whether every architecture has an image and created is beyond the window in
+// which sibling base builds of the same GKE version are published together.
+func (s *perPatchScan) pastBatch(created time.Time, timeErr error) bool {
+	return len(s.found) == len(ubuntuArchitectures) && (timeErr != nil || created.Before(s.floor.Add(-ubuntuPerPatchBatchWindow)))
+}
+
+// consider selects img for arch when it is a per-patch image of this version and base build
+// request, and newer than the one selected so far.
+func (s *perPatchScan) consider(arch string, img *compute.Image, created time.Time, timeErr error) {
+	m := s.names[arch].FindStringSubmatch(img.Name)
+	if m == nil || (s.version != "latest" && m[1] != s.version) {
+		return
+	}
+	if s.found[arch] == nil || m[1] > s.dates[arch] { // a later date letter sorts after the bare date
+		s.found[arch], s.dates[arch] = img, m[1]
+	}
+	if timeErr == nil && (s.floor.IsZero() || created.Before(s.floor)) {
+		s.floor = created
+	}
 }
 
 // isUsableForArch reports whether img is a READY, non-deprecated, clean image of this release for arch.
@@ -287,21 +415,46 @@ func (u *Ubuntu) imageScope(kubernetesVersion string) (project, prefix string, e
 // ubuntuImageProjects lists the projects that serve GKE Ubuntu images.
 var ubuntuImageProjects = []string{ubuntuLegacyImageProject, ubuntuImageProject}
 
+// ubuntuBuildRe parses the Ubuntu GKE image names that denote the same OS build: the plain image
+// (ubuntu-gke-<release>-<minor>-[<arch>-]vDATE; 22.04 amd64 has no arch token) and the per-patch image
+// (gke-<version>-gke<build>-ubuntu-<release>-<minor>-<arch>-vDATE-c-pre).
+var (
+	ubuntuPlainBuildRe    = regexp.MustCompile(`^ubuntu-gke-(\d{4})-(\d+-\d+)-(?:(amd64|arm64)-)?(v\d{8}[a-z]?)$`)
+	ubuntuPerPatchBuildRe = regexp.MustCompile(`^gke-\d+-gke\d+-ubuntu-(\d{4})-(\d+-\d+)-(amd64|arm64)-(v\d{8}[a-z]?)-c-pre$`)
+	imageSourceRe         = regexp.MustCompile(`projects/([^/]+)/global/images/([^/]+)$`)
+)
+
+// ubuntuBuild identifies the OS build behind an Ubuntu GKE image reference as release, image minor,
+// architecture and base date. Packaging differences (plain or per-patch with preloaded components,
+// either Ubuntu image project) are not part of it.
+func ubuntuBuild(image string) (string, bool) {
+	m := imageSourceRe.FindStringSubmatch(image)
+	if m == nil || !slices.Contains(ubuntuImageProjects, m[1]) {
+		return "", false
+	}
+	for _, re := range []*regexp.Regexp{ubuntuPlainBuildRe, ubuntuPerPatchBuildRe} {
+		if parts := re.FindStringSubmatch(m[2]); parts != nil {
+			arch := parts[3]
+			if arch == "" {
+				arch = OSArchAMD64Requirement
+			}
+			return strings.Join([]string{parts[1], parts[2], arch, parts[4]}, "|"), true
+		}
+	}
+	return "", false
+}
+
 // SameImage reports whether imageID, the boot image of a running node, is sourceImage from the
-// NodeClass status. GKE mirrors Ubuntu images under identical names in both Ubuntu image projects,
-// so a node launched from one project is not drifted by the other project serving that image.
+// NodeClass status. Ubuntu images count as the same when they are the same OS build (release,
+// minor, architecture and base date): GKE mirrors images under identical names in both Ubuntu image
+// projects, and a per-patch image is the plain image of that build with the GKE release preloaded.
+// Neither a project move nor switching to the per-patch image replaces running nodes; only a
+// different base build does.
 func SameImage(imageID, sourceImage string) bool {
 	if strings.HasSuffix(imageID, sourceImage) {
 		return true
 	}
-	project, name, err := parseImageSource(sourceImage)
-	if err != nil || !slices.Contains(ubuntuImageProjects, project) {
-		return false
-	}
-	for _, other := range ubuntuImageProjects {
-		if other != project && strings.HasSuffix(imageID, fmt.Sprintf("projects/%s/global/images/%s", other, name)) {
-			return true
-		}
-	}
-	return false
+	have, ok := ubuntuBuild(imageID)
+	want, ok2 := ubuntuBuild(sourceImage)
+	return ok && ok2 && have == want
 }

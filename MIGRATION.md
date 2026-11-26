@@ -47,6 +47,8 @@ imageSelectorTerms:
     version: latest
 ```
 
+**Ubuntu nodes on GKE 1.36 and later start faster.** Karpenter now prefers the per-patch image GKE publishes for your cluster's exact version (the image GKE boots its own Ubuntu pools with, components preloaded); measured, nodes were Ready in about 80 seconds instead of about 204. It falls back to the plain image when none exists. That image's base build can be older than the newest plain build, so the first reconciliation after the upgrade can replace `latest` Ubuntu nodes (drift) when the base date differs; control it with NodePool disruption budgets, or pin `version: vYYYYMMDD` to keep a build (a pin is not replaced just because it now resolves to the per-patch image of the same date). See [Ubuntu per-patch images](docs/image-selection.md#ubuntu-per-patch-images).
+
 GKE publishes each Ubuntu release only for some minors, and Karpenter never substitutes another release: as of November 2026 Ubuntu 22.04 images stop at Kubernetes 1.31, 24.04 covers 1.31–1.37 and 26.04 covers 1.37 and 1.38 (alpha). A NodeClass whose release has no image for the cluster's minor reports `ImagesReady=False` / `ImageResolutionFailed` naming the release and project; change `osVersion` explicitly (nodes then drift to the new image) before upgrading the cluster. See [OS families](docs/image-selection.md#os-families).
 
 ### Release distribution moves to GHCR OCI

@@ -29,11 +29,12 @@ GKE publishes Ubuntu node images in `ubuntu-os-gke-cloud` for Kubernetes before 
 - Select the Ubuntu release with a field instead of one family per release, and support 26.04 without a third copy of the 22.04/24.04 branching.
 - Not replace existing Ubuntu nodes because of the project move.
 - Fail clearly when GKE publishes no image of the selected release for the cluster's minor.
+- Start Ubuntu nodes with the image GKE itself boots (preloaded components) instead of the plain base image, without extra catalog quota or forced node replacement.
 
 ### Non-Goals
 
 - Dropping Ubuntu 22.04 (still usable on the documented range up to 1.31) or removing the deprecated `Ubuntu2204`/`Ubuntu2404` family names, which keep working; removal follows the project API compatibility policy.
-- Selecting Ubuntu images by exact GKE patch or release channel, or decoding releases from `-c-pre` names. Ubuntu keeps the API-server snapshot behavior from proposal 0013.
+- Selecting Ubuntu images by release channel, by a GKE patch other than the master's, or decoding the Ubuntu release from `-c-pre` names. Ubuntu keeps the API-server snapshot behavior from proposal 0013.
 - Substituting an Ubuntu release or image project when the selected one has no image.
 - Switching `Ubuntu@...` aliases away from Ubuntu 24.04.
 
@@ -70,20 +71,47 @@ GKE has default-release logic, but it is internal: the only documented rule is t
 - Release gate: `ubuntuDefaultVerifiedMinor` must be at least the minor of `MaxK8sVersion`, enforced by a unit test. Raising the maximum fails the test until the new minor has been checked against the GKE release notes for a documented change of the Ubuntu default (none through 1.37), a row has been added if there was one, and the constant is raised; `RELEASE.md` lists this step. Above the constant, `default` uses the fallback row with a warning. A test also requires exactly one fallback row and that it is the newest.
 - The resolver gets the cluster version from the same API-server snapshot used for image discovery and bootstrap, so release, project and bootstrap version cannot disagree.
 
-### Drift across the Ubuntu projects
+### Per-patch images (faster node startup)
 
-Image drift treats a node's boot image as the published image when the full path matches, or when both are in the two Ubuntu image projects and the image name is equal. A different name (build, arch, series) still drifts. Names are equal across the projects by GKE's publishing practice; the unit tests pin this contract.
+For GKE 1.36 and later, GKE assigns each Ubuntu node pool a per-patch image named `gke-<version>-gke<build>-ubuntu-<release>-<minor>-<arch>-vDATE-c-pre` in `gke-ubuntu-node-images`. This was verified on 2026-11-22 with a throwaway Ubuntu pool on a 1.36.4-gke.2046003 cluster: the pool's `config.nodeImageConfig` and the node VM's boot disk both named `gke-1364-gke2046003-ubuntu-2404-1-36-amd64-v20260914-c-pre`. It is the plain base image of that build with the GKE release's node components preloaded (12 GB disk, 10 GB archive, against 10 GB and 2.5 GB for the plain image). The legacy project has no such images.
+
+Resolution prefers it, per architecture, when the cluster master's exact GKE version has one:
+
+- **Scope:** only `gke-ubuntu-node-images`, so GKE 1.36 and later, and only the master's exact `<version>-gke.<build>`. There is no version threshold beyond the project switch, and no fuzzy matching to another patch. Otherwise, and for any lookup failure, the plain image is used, so a newly released master patch or an older minor behaves as before.
+- **Selection:** clean names of the right release and architecture only (`-hwe`, `-64k`, `-acs` and other variants are excluded), READY and not deprecated. When GKE published several base builds for one GKE version (172 of 508 versions have two), the newest base date wins; a pin selects exactly its date, and a pin with no per-patch image uses the plain image of that date. Which of several builds GKE itself assigns could only be checked for a version with one build, so "newest" is a judgment, not a verified GKE rule.
+- **Freshness:** the base build is the one GKE published for the master version, so it follows GKE's patch cadence and can be older than the newest plain build, for example on a cluster that has not been upgraded for weeks. Pin `version` to choose a build.
+- **Bootstrap:** unchanged. The bootstrap release is still the API-server snapshot, which equals the image's GKE version by construction, so the preloaded components are the ones used.
+- **Catalog quota (follows #644):** no server-side filter, newest first, partial responses. The plain lookup stops on its first page as before. The per-patch lookup is a separate scan bounded to 8 pages (4,000 newest images) that keeps reading only 24 hours past the newest match to see sibling base builds. Results are cached for an hour (misses for 10 minutes), keyed by project, release, master version and pin, so a stable cluster re-reads the catalog about once an hour at most. A failed scan is logged and falls back to the plain image.
+
+**Measured startup** (Karpenter on the shared 1.36.4 E2E cluster, `n2-standard-2`, zone `asia-southeast1-b`, on-demand, identical base build `v20260914`, images selected by ID; VM creation to node Ready):
+
+| Setup                                       | Median | Range      | Runs    |
+|---------------------------------------------|--------|------------|---------|
+| Plain image, provider-default boot disk     | 204 s  | 200 to 207 | 5 warm  |
+| Per-patch image, provider-default boot disk | 80 s   | 77 to 80   | 4 warm  |
+| Plain image, `pd-balanced` boot disk        | 189 s  | 177 to 196 | 3       |
+| Per-patch image, `pd-balanced` boot disk    | 57 s   | 50 to 58   | 3       |
+| GKE-native Ubuntu pool, `pd-balanced`       | 52 s   | 51 to 61   | 3 nodes |
+
+The per-patch image makes Ubuntu nodes start about 2.5 times faster (NodeClaim creation to pod Ready: about 250 s to 136 s) because `configure.sh` finds the components preloaded (13 "preloaded" log lines, the same as the GKE node) instead of downloading 47 items. The remaining gap to GKE (80 s against 52 s) is not bootstrap: the provider's default boot disk type is `pd-standard`, `configure.sh` starts about 20 s later on it, and with an explicit `pd-balanced` boot disk Karpenter is within about 6 s of GKE. That default is outside this proposal; setting `disks[].category: pd-balanced` is documented as a startup tuning. Samples are small (3 to 5 per cell), cold first runs are reported separately in the raw data, and one environment was measured.
+
+### Drift across the Ubuntu projects and packagings
+
+Image drift treats a node's boot image as the published image when the full path matches, or when both are Ubuntu GKE images of the same OS build: the same release, image minor, architecture and base date. The plain image, the per-patch image of that build and either Ubuntu image project are therefore the same image. A project move, or switching to the per-patch image of the same base build, replaces no nodes; a different base build, architecture or release still drifts. Because the per-patch image of the master version can have an older base build than the newest plain image, a NodeClass that tracks `latest` can see one replacement when the controller is first upgraded on 1.36+ (see Migration); pins are unaffected unless their date has a per-patch image, which is the same build.
 
 ## Risks and Mitigations
 
-| Risk                                                                                     | Likelihood             | Impact                                       | Mitigation                                                                                                      |
-|------------------------------------------------------------------------------------------|------------------------|----------------------------------------------|-----------------------------------------------------------------------------------------------------------------|
-| Environments cannot read `gke-ubuntu-node-images` (trusted-image-project policy, VPC-SC) | Medium                 | Ubuntu `ImagesReady=False` on 1.36+          | `MIGRATION.md` and docs name the project; failure names it.                                                     |
-| Google stops publishing a release for a minor (24.04 on 1.38)                            | High (certain on 1.38) | Existing NodeClass cannot resolve            | Clear error; docs list availability; no silent release switch.                                                  |
-| A third spelling of the same selection adds API surface                                  | Medium                 | Confusing docs and more validation           | Old families frozen and deprecated; docs show only the new shape; removal follows the API compatibility policy. |
-| `osVersion` accepts a release Karpenter does not know                                    | Medium                 | Failure surfaces in status, not at admission | Error lists supported releases; documented.                                                                     |
-| Names diverge between projects                                                           | Low                    | Spurious drift or missed drift               | Name-equality contract tested; revisit if Google changes naming.                                                |
-| Ubuntu 26.04 bootstrap differs                                                           | Medium                 | 26.04 nodes fail to register                 | E2E on a cluster with 26.04 images before claiming support.                                                     |
+| Risk                                                                                     | Likelihood             | Impact                                                                                          | Mitigation                                                                                                      |
+|------------------------------------------------------------------------------------------|------------------------|-------------------------------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------|
+| Environments cannot read `gke-ubuntu-node-images` (trusted-image-project policy, VPC-SC) | Medium                 | Ubuntu `ImagesReady=False` on 1.36+                                                             | `MIGRATION.md` and docs name the project; failure names it.                                                     |
+| Google stops publishing a release for a minor (24.04 on 1.38)                            | High (certain on 1.38) | Existing NodeClass cannot resolve                                                               | Clear error; docs list availability; no silent release switch.                                                  |
+| A third spelling of the same selection adds API surface                                  | Medium                 | Confusing docs and more validation                                                              | Old families frozen and deprecated; docs show only the new shape; removal follows the API compatibility policy. |
+| `osVersion` accepts a release Karpenter does not know                                    | Medium                 | Failure surfaces in status, not at admission                                                    | Error lists supported releases; documented.                                                                     |
+| Names diverge between projects                                                           | Low                    | Spurious drift or missed drift                                                                  | Name-equality contract tested; revisit if Google changes naming.                                                |
+| Per-patch base build older than the newest plain image                                   | Medium                 | One replacement of `latest` nodes on upgrade; slightly older packages until the master upgrades | Documented; pin `version`; disruption budgets; freshness follows GKE's own cadence.                             |
+| Several base builds for one GKE version                                                  | Medium                 | "Newest" may differ from the build GKE assigns                                                  | Judgment documented; pin selects exactly; verified only for single-build versions.                              |
+| Per-patch lookup costs catalog quota                                                     | Low                    | Extra list calls                                                                                | No filter, 8-page bound, hour-long cache, failure falls back to plain.                                          |
+| Ubuntu 26.04 bootstrap differs                                                           | Medium                 | 26.04 nodes fail to register                                                                    | E2E on a cluster with 26.04 images before claiming support.                                                     |
 
 ## Test Plan
 
@@ -96,6 +124,8 @@ Image drift treats a node's boot image as the published image when the full path
 - A release with no image for the minor fails with project/release (and the 22.04 hint); an unknown `osVersion` lists the supported releases.
 - `family`/`osVersion` routing: `Ubuntu`+`osVersion`, `Ubuntu2404`, `Ubuntu@latest` and `Ubuntu2404@latest` resolve identically for 24.04.
 - CRD admission (generated CEL): `Ubuntu` admits an omitted `osVersion`, other families reject it, malformed releases are rejected, `default` is admitted, deprecated families still admit.
+- Per-patch images: preferred for the exact master version per architecture, variants/other releases/other versions excluded, newest base build for `latest`, exact date for pins with plain fallback, plain fallback for missing images, non-GKE versions and the legacy project, no server-side filters, bounded pages, cache hit avoids re-reading the catalog, failed scan falls back to plain.
+- Drift: plain and per-patch images of one OS build (either project) are the same; other base date, architecture, release or image minor is not.
 - `default`: sourced boundaries (1.31 vs 1.32.0 vs 1.32.1), out-of-range versions use the fallback (above) or oldest row (below) and are reported unverified, 1.31 resolves 22.04 although 24.04 images exist, 1.37 resolves 24.04 although 26.04 images exist, 1.38 fails clearly, exactly one fallback row, and `ubuntuDefaultVerifiedMinor` is at least the `MaxK8sVersion` minor.
 - Drift: same name from the other Ubuntu project does not drift; older build, other arch or unrelated project does.
 
@@ -114,9 +144,9 @@ Allow the controller's project/network policy to use `gke-ubuntu-node-images` im
 
 Rejected: hides blocked or misconfigured projects and makes the selected catalog depend on transient publication state.
 
-### Select by exact GKE patch via `-c-pre` images
+### Select any GKE patch, or decode the release from `-c-pre` names
 
-Rejected for now: the embedded release is not reliably decodable for Ubuntu and would change image pin and channel semantics.
+Rejected: the embedded Ubuntu release is not reliably decodable (the minor in the prefix can disagree with the image minor token) and a different patch than the master would change pin and channel semantics. Only the master's exact version is used, as in "Per-patch images".
 
 ### Derive the default release from GKE data at runtime
 
@@ -131,4 +161,5 @@ Decision: keep the sourced table as the runtime authority. The catalog data is u
 ## Future Direction
 
 - Release-channel-aware Ubuntu selection once the `-c-pre` naming is understood.
+- Defaulting the boot disk type to `pd-balanced` (GKE's usual default) instead of `pd-standard`: it removes about 20 s of startup, but changes cost and needs its own proposal.
 - Dropping the legacy project once Google stops publishing there.

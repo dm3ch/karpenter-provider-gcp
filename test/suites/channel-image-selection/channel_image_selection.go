@@ -19,6 +19,7 @@ package channelimageselection
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
@@ -171,18 +172,24 @@ func expectResolvedImage(ctx context.Context, tc familyChannelTestCase, sourceIm
 			tc.channel, expectedGKEVersion, expectedSubstr, sourceImages[0])
 	case tc.version == "latest" && tc.osVersion == "26.04":
 		// A fixed 26.04 selection must resolve the newest clean 26.04 image for the cluster's minor.
-		expectedVer := env.ResolveUbuntuVersion(ctx, "2604")
-		Expect(sourceImages[0]).To(ContainSubstring("ubuntu-gke-2604-"),
-			"resolved image is not an Ubuntu 26.04 image: %s", sourceImages[0])
-		Expect(sourceImages[0]).To(ContainSubstring(expectedVer),
-			"resolved Ubuntu 26.04 image does not contain expected version %s", expectedVer)
+		expectUbuntuImage(sourceImages[0], "2604", env.ResolveUbuntuVersion(ctx, "2604"))
 	case tc.version == "latest" && (tc.family == gcpv1alpha1.ImageFamilyUbuntu2404 || tc.osVersion == "24.04" || tc.osVersion == gcpv1alpha1.ImageOSVersionDefault ||
 		(tc.family == gcpv1alpha1.ImageFamilyUbuntu && tc.osVersion == "")):
 		// For version: latest, the resolved image must embed the independently-queried Ubuntu 24.04 version.
-		expectedVer := env.ResolveCurrentUbuntuVersion(ctx)
-		Expect(sourceImages[0]).To(ContainSubstring("ubuntu-gke-2404-"),
-			"resolved image is not an Ubuntu 24.04 image: %s", sourceImages[0])
-		Expect(sourceImages[0]).To(ContainSubstring(expectedVer),
-			"resolved Ubuntu 24.04 image does not contain expected version %s", expectedVer)
+		expectUbuntuImage(sourceImages[0], "2404", env.ResolveCurrentUbuntuVersion(ctx))
 	}
+}
+
+// expectUbuntuImage checks that a resolved Ubuntu image is what `latest` selects for a release: the
+// per-patch image GKE publishes for the cluster master's exact version (GKE 1.36 and later, whose
+// base build follows GKE's patch cadence), or otherwise the newest plain image.
+func expectUbuntuImage(image, release, newestPlainVersion string) {
+	perPatch := regexp.MustCompile(`/gke-\d+-gke\d+-ubuntu-` + release + `-\d+-\d+-(amd64|arm64)-v\d{8}[a-z]?-c-pre$`)
+	if perPatch.MatchString(image) {
+		return
+	}
+	Expect(image).To(ContainSubstring("ubuntu-gke-"+release+"-"),
+		"resolved image is neither a per-patch nor a plain Ubuntu %s image: %s", release, image)
+	Expect(image).To(ContainSubstring(newestPlainVersion),
+		"resolved plain Ubuntu %s image does not contain the newest version %s", release, newestPlainVersion)
 }

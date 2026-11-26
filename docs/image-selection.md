@@ -106,6 +106,18 @@ The controller needs HTTPS access to `https://storage.googleapis.com/gke-release
 
 Upgrade CRDs before the controller, then allow normal image-status refresh. Old CRDs can prune the new field; a new launch with an incomplete row waits for reconciliation. Existing VMs remain adoptable without a current artifact lookup. A release-only change with the same image does not introduce drift or replace running nodes.
 
+## Ubuntu per-patch images
+
+For GKE 1.36 and later, Karpenter prefers the per-patch image GKE publishes for your cluster's exact GKE version (`gke-<version>-gke<build>-ubuntu-<release>-…-c-pre` in `gke-ubuntu-node-images`). It is the image GKE boots its own Ubuntu node pools with: the plain base image with that release's node components preloaded. It is resolved per architecture and shown in `status.images` like any other image.
+
+**Faster startup.** Measured on a 1.36 cluster (`n2-standard-2`, same base build, provider-default boot disk), a node was Ready about 80 seconds after its VM was created with the per-patch image, against about 204 seconds with the plain image: roughly 2.5 times faster, and a pending pod was Running after about 136 seconds instead of 250. The plain image downloads the components at boot; the per-patch image has them preloaded. Samples are small (three to five runs per setup, one cluster).
+
+- **When it is used:** only when GKE published a per-patch image for the master's exact version and the selected release. Otherwise, including older GKE versions, a master patch released moments ago, or a failed lookup, the plain image is used and nothing else changes.
+- **Base build:** it is the build GKE published for your master version, so it follows GKE's patch cadence and can be older than the newest plain build. If several base builds exist for one GKE version, the newest is used. Set `version: vYYYYMMDD` to choose a base build; a pin uses the per-patch image of that date when GKE published one, otherwise the plain image of that date.
+- **Replacement:** nodes are replaced when the OS build (release, architecture, base date) changes, not when the packaging changes: a node on a plain image is not replaced by the per-patch image of the same base build.
+- **Catalog quota:** the lookup is one bounded, cached scan without server-side filters (at most eight pages of the image list, cached for an hour), so it adds no meaningful load.
+- **Boot disk matters too:** with no `disks[].category`, the provider boots on `pd-standard`, which made nodes start about 20 seconds slower in the same measurement; setting `category: pd-balanced` (GKE's usual default) brought Karpenter within about 6 seconds of a GKE-managed Ubuntu pool.
+
 ## Container-Optimized OS variants
 
 Karpenter supports independently published amd64 CPU (`-c-pre`), arm64 CPU (`-cos-arm64-...-c-pre`), and amd64 NVIDIA (`-c-nvda`) images. Specialized builds such as kmod, gVisor, `-test`, and cgroup v1 are excluded.
