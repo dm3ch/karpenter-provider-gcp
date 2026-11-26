@@ -304,7 +304,7 @@ spec:
                     family:
                       description: |-
                         Family specifies the OS image family. Required when using Channel or Version.
-                        Valid values: ContainerOptimizedOS, Ubuntu (requires OSVersion), and the deprecated
+                        Valid values: ContainerOptimizedOS, Ubuntu (with an optional OSVersion), and the deprecated
                         Ubuntu2404 and Ubuntu2204, which are equivalent to Ubuntu with osVersion 24.04 and 22.04.
                       enum:
                       - ContainerOptimizedOS

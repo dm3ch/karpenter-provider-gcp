@@ -28,11 +28,13 @@ Existing nodes are not upgraded in place, and a release-only status change with 
 
 `spec.kubeletConfiguration.maxPods` now accepts at most 512, GKE Standard's limit, and values from 257 to 512 get a `/22` Pod alias range per node instead of `/23`. Upgrade CRDs before the controller. A NodeClass with a larger value is rejected on its next update; lower it first. No other action is required: values up to 256 keep their ranges. A `/22` per node needs a Pod secondary range with room for it. See [Pod density](docs/examples/advanced.md#pod-density).
 
-### Ubuntu images follow the GKE 1.36 image project; `family: Ubuntu` takes an `osVersion`
+### Ubuntu images follow the GKE 1.36 image project; `family: Ubuntu` takes `osVersion`
 
-On GKE 1.36 and later, Ubuntu images are resolved from `gke-ubuntu-node-images` instead of `ubuntu-os-gke-cloud`; earlier minors keep using `ubuntu-os-gke-cloud`. Allow the controller's project, trusted-image-project policy and any VPC Service Controls perimeter to use the new project's images. Existing Ubuntu nodes are not replaced by the project change: GKE publishes the same image names in both projects, and drift treats those as the same image.
+On GKE 1.36 and later, Ubuntu images come from `gke-ubuntu-node-images` instead of `ubuntu-os-gke-cloud`; earlier minors are unchanged. Allow the new project in the controller's trusted-image-project policy and any VPC Service Controls perimeter. The move replaces no existing node: GKE uses the same image names in both projects.
 
-**Upgrade CRDs before the controller** to use the new field. `imageSelectorTerms[].osVersion` selects the Ubuntu release for `family: Ubuntu` (`"22.04"`, `"24.04"`, `"26.04"`, or `default` for the release GKE uses for the cluster version) and is optional there (omitted means `default`); it is rejected for other families. `default` follows GKE and is verified through Kubernetes 1.37 in this release; above that it uses GKE's current documented default (24.04) with a warning. It can change the release, and drift nodes, when a cluster upgrade crosses a version where GKE moves its default (1.32.1 for 22.04 to 24.04). The families `Ubuntu2404` and `Ubuntu2204` are deprecated but unchanged; they resolve to the same images as `Ubuntu` with `osVersion: "24.04"`/`"22.04"`, so you can switch spellings without drifting nodes. Ubuntu 26.04 is available only through `family: Ubuntu`.
+**Upgrade CRDs before the controller.** `imageSelectorTerms[].osVersion` selects the Ubuntu release for `family: Ubuntu` (`"22.04"`, `"24.04"`, `"26.04"`, or `default`, GKE's release for the cluster version; omitted means `default`) and is rejected for other families. `default` can change the release, and drift nodes, when a cluster upgrade crosses a version where GKE moves its default (1.32.1: 22.04 to 24.04).
+
+**Deprecation:** the families `Ubuntu2404` and `Ubuntu2204` are deprecated and will be removed in a future release, announced here first. They resolve exactly like `Ubuntu` with `osVersion: "24.04"`/`"22.04"`, so switching drifts no node; please switch now. Ubuntu 26.04 is available only through `family: Ubuntu`.
 
 ```yaml
 # Before
@@ -47,9 +49,9 @@ imageSelectorTerms:
     version: latest
 ```
 
-**Ubuntu nodes on GKE 1.36 and later start faster.** Karpenter now prefers the per-patch image GKE publishes for your cluster's exact version (the image GKE boots its own Ubuntu pools with, components preloaded); measured, nodes were Ready in about 80 seconds instead of about 204. It falls back to the plain image when none exists. That image's base build can be older than the newest plain build, so the first reconciliation after the upgrade can replace `latest` Ubuntu nodes (drift) when the base date differs; control it with NodePool disruption budgets, or pin `version: vYYYYMMDD` to keep a build (a pin is not replaced just because it now resolves to the per-patch image of the same date). See [Ubuntu per-patch images](docs/image-selection.md#ubuntu-per-patch-images).
+**Faster startup on 1.36+.** Karpenter prefers the per-patch image GKE boots its own Ubuntu pools with (components preloaded): nodes were Ready in about 80 seconds instead of 204. Its base build can be older than the newest plain build, so the first reconciliation can replace `latest` Ubuntu nodes once; use NodePool disruption budgets or pin `version: vYYYYMMDD`. See [Ubuntu per-patch images](docs/image-selection.md#ubuntu-per-patch-images).
 
-GKE publishes each Ubuntu release only for some minors, and Karpenter never substitutes another release: as of November 2026 Ubuntu 22.04 images stop at Kubernetes 1.31, 24.04 covers 1.31–1.37 and 26.04 covers 1.37 and 1.38 (alpha). A NodeClass whose release has no image for the cluster's minor reports `ImagesReady=False` / `ImageResolutionFailed` naming the release and project; change `osVersion` explicitly (nodes then drift to the new image) before upgrading the cluster. See [OS families](docs/image-selection.md#os-families).
+GKE publishes each Ubuntu release only for some minors, and Karpenter never substitutes another (November 2026: 22.04 through 1.31, 24.04 for 1.31–1.37, 26.04 for 1.37 and 1.38 alpha). A NodeClass whose release has no image for the cluster's minor reports `ImagesReady=False` / `ImageResolutionFailed`; change `osVersion` (nodes then drift) before upgrading the cluster. See [OS families](docs/image-selection.md#os-families).
 
 ### Release distribution moves to GHCR OCI
 

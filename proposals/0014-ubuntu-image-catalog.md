@@ -1,6 +1,6 @@
 # Proposal: Ubuntu image catalog for GKE 1.36+, `osVersion` and per-patch images
 
-- **Status**: Draft
+- **Status**: Implemented by [#802](https://github.com/karpenter-gcp/karpenter-provider-gcp/pull/802)
 - **Authors**: @dm3ch
 - **Created**: 2026-11-21
 - **Related Issues**: [#789](https://github.com/karpenter-gcp/karpenter-provider-gcp/issues/789) (follow-up: [proposal 0013](0013-release-aligned-bootstrap.md) left the Ubuntu catalog migration out of scope)
