@@ -92,7 +92,7 @@ jobs:
           go-version-file: go.mod
 
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v4.39.3
+        uses: github/codeql-action/init@v4.39.4
         with:
           languages: ${{ matrix.language }}
           build-mode: ${{ matrix.build-mode }}
@@ -100,10 +100,10 @@ jobs:
 
       - if: matrix.build-mode == 'autobuild'
         name: Autobuild
-        uses: github/codeql-action/autobuild@v4.39.3
+        uses: github/codeql-action/autobuild@v4.39.4
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v4.39.3
+        uses: github/codeql-action/analyze@v4.39.4
         with:
           category: /language:${{ matrix.language }}
 
@@ -321,19 +321,19 @@ jobs:
           path: reports
       - name: Upload govulncheck findings
         if: ${{ !cancelled() && hashFiles('reports/govulncheck-sarif/govulncheck.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@v4.39.3
+        uses: github/codeql-action/upload-sarif@v4.39.4
         with:
           sarif_file: reports/govulncheck-sarif/govulncheck.sarif
           category: govulncheck/controller-linux-amd64
       - name: Upload Grype findings (amd64)
         if: ${{ !cancelled() && hashFiles('reports/image-security-linux-amd64/grype.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@v4.39.3
+        uses: github/codeql-action/upload-sarif@v4.39.4
         with:
           sarif_file: reports/image-security-linux-amd64/grype.sarif
           category: grype/main-controller-linux-amd64
       - name: Upload Grype findings (arm64)
         if: ${{ !cancelled() && hashFiles('reports/image-security-linux-arm64/grype.sarif') != '' }}
-        uses: github/codeql-action/upload-sarif@v4.39.3
+        uses: github/codeql-action/upload-sarif@v4.39.4
         with:
           sarif_file: reports/image-security-linux-arm64/grype.sarif
           category: grype/main-controller-linux-arm64
