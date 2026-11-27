@@ -4,6 +4,9 @@ on:
   push:
     branches: [ "main" ]
 
+# Deny by default; the job below grants only what it needs.
+permissions: {}
+
 jobs:
   latest-image-build-publish:
     name: Publish image
