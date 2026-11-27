@@ -144,6 +144,20 @@ func (f *attestationFixture) blocks(t testing.TB) []pemBlock {
 	}
 }
 
+// requestWithOrganizations returns a valid attestation envelope whose CSR
+// requests these subject organizations for the certified key, so only the
+// organization itself differs from a legitimate request.
+func (f *attestationFixture) requestWithOrganizations(t testing.TB, organizations []string) []byte {
+	t.Helper()
+	der, err := x509.CreateCertificateRequest(rand.Reader, &x509.CertificateRequest{
+		Subject: pkix.Name{CommonName: "system:node:" + f.vm.Name, Organization: organizations},
+	}, f.key)
+	require.NoError(t, err)
+	blocks := f.blocks(t)
+	blocks[0] = pemBlock{Type: csrRequestBlock, Bytes: der}
+	return encodePEMBlocks(blocks)
+}
+
 // attestationKeyPEM returns the authoritative attestation key in the form the
 // Compute API returns it.
 func (f *attestationFixture) attestationKeyPEM(t testing.TB) string {

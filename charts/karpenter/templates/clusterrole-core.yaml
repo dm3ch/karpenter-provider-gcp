@@ -88,7 +88,7 @@ rules:
     resourceNames: ["kubernetes.io/kube-apiserver-client-kubelet"]
     verbs: ["approve"]
   # The CSR controller asks the API server whether the original requester may
-  # create the kubelet CSR subresource before approving a legacy "kubelet" request.
+  # create the kubelet CSR subresource before approving it.
   - apiGroups: ["authorization.k8s.io"]
     resources: ["subjectaccessreviews"]
     verbs: ["create"]

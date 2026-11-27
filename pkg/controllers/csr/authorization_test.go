@@ -19,10 +19,12 @@ package csr
 import (
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"sync"
 	"testing"
 	"time"
@@ -66,12 +68,13 @@ func TestReconcileDoesNotReapproveDecidedRequests(t *testing.T) {
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			request := bootstrapCSR(nodeRequest(t, attestationVM.Name))
+			fixture := newAttestationFixture(t)
+			request := bootstrapCSR(encodePEMBlocks(fixture.blocks(t)))
 			tt.decided(request)
 			api, double := newKubeAPIDouble(t)
 			double.sarAllowed = true
-			controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
-				return liveIncarnation(), nil
+			controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+				return fixtureIdentity(t, fixture), nil
 			}))
 			controller.client = &csrReadClient{request: request, claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
 
@@ -84,12 +87,13 @@ func TestReconcileDoesNotReapproveDecidedRequests(t *testing.T) {
 }
 
 func TestReconcileFailsClosedWhenClaimsCannotBeRead(t *testing.T) {
+	fixture := newAttestationFixture(t)
 	api, double := newKubeAPIDouble(t)
 	readErr := errors.New("nodeclaim read unavailable")
-	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
-		return liveIncarnation(), nil
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+		return fixtureIdentity(t, fixture), nil
 	}))
-	controller.client = &csrReadClient{request: bootstrapCSR(nodeRequest(t, attestationVM.Name)), claimError: readErr}
+	controller.client = &csrReadClient{request: bootstrapCSR(encodePEMBlocks(fixture.blocks(t))), claimError: readErr}
 
 	_, err := controller.Reconcile(context.Background())
 	require.ErrorIs(t, err, readErr)
@@ -97,7 +101,8 @@ func TestReconcileFailsClosedWhenClaimsCannotBeRead(t *testing.T) {
 }
 
 func TestReconcileContinuesAfterTemporaryIdentityFailure(t *testing.T) {
-	failing := legacyCSR(legacyRequestPEM(t, nil))
+	fixture := newAttestationFixture(t)
+	failing := bootstrapCSR(encodePEMBlocks(fixture.blocks(t)))
 	failing.Name = "csr-failing"
 	nodeName := "karpenter-other"
 	other := registeredNodeClaim("other", nodeName, 42)
@@ -106,10 +111,10 @@ func TestReconcileContinuesAfterTemporaryIdentityFailure(t *testing.T) {
 
 	api, double := newKubeAPIDouble(t)
 	double.sarAllowed = true
-	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
 		return nil, errors.New("compute unavailable")
 	}))
-	controller.client = &csrReadClient{requests: []*certv1.CertificateSigningRequest{failing, selfRenewal}, claims: []karpv1.NodeClaim{launchedLegacyClaim(), other}}
+	controller.client = &csrReadClient{requests: []*certv1.CertificateSigningRequest{failing, selfRenewal}, claims: []karpv1.NodeClaim{claimForFixture(t, "pending"), other}}
 
 	_, err := controller.Reconcile(context.Background())
 	require.Error(t, err, "the temporary identity failure is reported for retry")
@@ -126,7 +131,7 @@ func TestReconcileSkipsUnrelatedBatchBeforeReadingClaims(t *testing.T) {
 	otherSigner.Spec.SignerName = certv1.KubeletServingSignerName
 	unknownUser := kubeletCSR([]byte("unused"), "unrelated-requester")
 	api, double := newKubeAPIDouble(t)
-	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
 		t.Fatal("irrelevant requests must not read VM identity")
 		return nil, nil
 	}))
@@ -141,13 +146,14 @@ func TestReconcileSkipsUnrelatedBatchBeforeReadingClaims(t *testing.T) {
 }
 
 func TestReconcileBoundsEachRequestIndependently(t *testing.T) {
-	first := legacyCSR(legacyRequestPEM(t, nil))
+	fixture := newAttestationFixture(t)
+	first := bootstrapCSR(encodePEMBlocks(fixture.blocks(t)))
 	second := first.DeepCopy()
 	second.Name = "csr-next"
 	api, double := newKubeAPIDouble(t)
 	double.sarAllowed = true
 	var firstContext context.Context
-	provider := identityProviderFunc(func(ctx context.Context, _, _ string) (*instance.InstanceIncarnation, error) {
+	controller := newTestController(t, api, identityProviderFunc(func(ctx context.Context, _, _ string) (*instance.InstanceIdentity, error) {
 		deadline, ok := ctx.Deadline()
 		require.True(t, ok, "each authorization attempt needs an end-to-end deadline")
 		require.LessOrEqual(t, time.Until(deadline), 30*time.Second)
@@ -157,10 +163,9 @@ func TestReconcileBoundsEachRequestIndependently(t *testing.T) {
 			return nil, context.DeadlineExceeded
 		}
 		require.ErrorIs(t, firstContext.Err(), context.Canceled, "release the first request's scope before the next")
-		return liveIncarnation(), nil
-	})
-	controller := NewController(api, provider, disabledPolicy())
-	controller.client = &csrReadClient{requests: []*certv1.CertificateSigningRequest{first, second}, claims: []karpv1.NodeClaim{launchedLegacyClaim()}}
+		return fixtureIdentity(t, fixture), nil
+	}))
+	controller.client = &csrReadClient{requests: []*certv1.CertificateSigningRequest{first, second}, claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
 	_, err := controller.Reconcile(context.Background())
 	require.ErrorIs(t, err, context.DeadlineExceeded)
 	approvals := double.recordedApprovals()
@@ -169,14 +174,56 @@ func TestReconcileBoundsEachRequestIndependently(t *testing.T) {
 	require.Len(t, double.recordedReviews(), 1, "a timed-out authorization must not reach SAR or approval")
 }
 
+func TestReconcileIndependentAttestationFixture(t *testing.T) {
+	// Public synthetic fixture, independently assembled with stdlib signatures and
+	// manually encoded TPM structures; no production converter or private keys.
+	data, err := os.ReadFile("testdata/gke-attestation.json")
+	require.NoError(t, err)
+	var fixture struct {
+		Request        string `json:"request"`
+		AttestationKey string `json:"attestationKey"`
+	}
+	require.NoError(t, json.Unmarshal(data, &fixture))
+	for _, tt := range []struct {
+		name         string
+		differentKey bool
+	}{{name: "valid"}, {name: "different CSR key", differentKey: true}} {
+		t.Run(tt.name, func(t *testing.T) {
+			request := []byte(fixture.Request)
+			if tt.differentKey {
+				block, rest := pem.Decode(request)
+				require.NotNil(t, block)
+				request = append(nodeRequest(t, attestationVM.Name), rest...)
+			}
+			api, double := newKubeAPIDouble(t)
+			double.sarAllowed = true
+			controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+				return &instance.InstanceIdentity{ProjectID: attestationVM.ProjectID, ProjectNumber: attestationVM.ProjectNumber,
+					Zone: attestationVM.Zone, Name: attestationVM.Name, NumericID: attestationVM.ID, AttestationKeyPEM: fixture.AttestationKey}, nil
+			}))
+			controller.client = &csrReadClient{request: bootstrapCSR(request), claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
+			_, err := controller.Reconcile(context.Background())
+			require.NoError(t, err)
+			if tt.differentKey {
+				require.Empty(t, double.recordedApprovals())
+				require.Empty(t, double.recordedReviews())
+			} else {
+				require.Len(t, double.recordedApprovals(), 1)
+				require.Len(t, double.recordedReviews(), 1)
+			}
+		})
+	}
+}
+
 func TestReconcileReportsApprovalConflict(t *testing.T) {
+	fixture := newAttestationFixture(t)
 	api, double := newKubeAPIDouble(t)
 	double.sarAllowed = true
 	double.approvalConflict = true
-	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
-		return liveIncarnation(), nil
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+		return fixtureIdentity(t, fixture), nil
 	}))
-	controller.client = &csrReadClient{request: bootstrapCSR(nodeRequest(t, attestationVM.Name)), claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
+	controller.client = &csrReadClient{request: bootstrapCSR(encodePEMBlocks(fixture.blocks(t))), claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
 
 	_, err := controller.Reconcile(context.Background())
 	require.Error(t, err, "a lost approval race is reported and retried against the reloaded request")
@@ -309,8 +356,9 @@ func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
 func TestReconcileRecordsEnrollmentOnlyForApprovedBootstrap(t *testing.T) {
 	const nodeName = "karpenter-target"
 	enrolledAt := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
-	identity := identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
-		return liveIncarnation(), nil
+	fixture := newAttestationFixture(t)
+	identity := identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+		return fixtureIdentity(t, fixture), nil
 	})
 	registeredFixtureClaim := registeredNodeClaim("registered", attestationVM.Name, attestationVM.ID)
 
@@ -321,17 +369,17 @@ func TestReconcileRecordsEnrollmentOnlyForApprovedBootstrap(t *testing.T) {
 		record bool
 	}{
 		{
-			name: "bootstrap of a launched claim",
+			name: "attested bootstrap of a launched claim",
 			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
-				return bootstrapCSR(nodeRequest(t, attestationVM.Name))
+				return bootstrapCSR(encodePEMBlocks(fixture.blocks(t)))
 			},
 			claims: []karpv1.NodeClaim{claimForFixture(t, "pending")},
 			record: true,
 		},
 		{
-			name: "bootstrap request for a registered claim",
+			name: "attested re-enrollment of a registered claim",
 			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
-				return bootstrapCSR(nodeRequest(t, attestationVM.Name))
+				return bootstrapCSR(encodePEMBlocks(fixture.blocks(t)))
 			},
 			claims: []karpv1.NodeClaim{registeredFixtureClaim},
 		},
@@ -374,14 +422,15 @@ func TestReconcileRecordsEnrollmentOnlyForApprovedBootstrap(t *testing.T) {
 }
 
 func TestReconcileRecordsNoEnrollmentWhenApprovalFails(t *testing.T) {
+	fixture := newAttestationFixture(t)
 	api, double := newKubeAPIDouble(t)
 	double.sarAllowed = true
 	double.approvalConflict = true
-	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
-		return liveIncarnation(), nil
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
+		return fixtureIdentity(t, fixture), nil
 	}))
 	reads := &csrReadClient{
-		request: bootstrapCSR(nodeRequest(t, attestationVM.Name)),
+		request: bootstrapCSR(encodePEMBlocks(fixture.blocks(t))),
 		claims:  []karpv1.NodeClaim{claimForFixture(t, "pending")},
 	}
 	controller.client = reads
@@ -392,8 +441,9 @@ func TestReconcileRecordsNoEnrollmentWhenApprovalFails(t *testing.T) {
 }
 
 func TestReconcileRetriesMissedEnrollmentOnlyForOwnApprovals(t *testing.T) {
+	fixture := newAttestationFixture(t)
 	approved := func(reason string) *certv1.CertificateSigningRequest {
-		request := bootstrapCSR(nodeRequest(t, attestationVM.Name))
+		request := bootstrapCSR(encodePEMBlocks(fixture.blocks(t)))
 		request.Status.Conditions = []certv1.CertificateSigningRequestCondition{{Type: certv1.CertificateApproved, Status: "True", Reason: reason}}
 		return request
 	}
@@ -414,7 +464,7 @@ func TestReconcileRetriesMissedEnrollmentOnlyForOwnApprovals(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			api, double := newKubeAPIDouble(t)
 			double.sarAllowed = true
-			controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
+			controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIdentity, error) {
 				t.Error("a decided request must not be attested again")
 				return nil, errors.New("unexpected identity lookup")
 			}))

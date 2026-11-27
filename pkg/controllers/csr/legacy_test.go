@@ -38,10 +38,17 @@ import (
 
 const legacyClaimUID = types.UID("8d3b1a4e-1111-4222-8333-444444444444")
 
-// legacyInstances serves the live VM incarnation.
+// legacyInstances serves the live VM incarnation. GetIdentity is the attested
+// path's lookup and must never be used for a legacy request.
 type legacyInstances struct {
+	t           *testing.T
 	incarnation *instance.InstanceIncarnation
 	err         error
+}
+
+func (l *legacyInstances) GetIdentity(context.Context, string, string) (*instance.InstanceIdentity, error) {
+	l.t.Error("legacy bootstrap must not read attestation identity")
+	return nil, errors.New("unexpected attestation identity read")
 }
 
 func (l *legacyInstances) GetIncarnation(context.Context, string, string) (*instance.InstanceIncarnation, error) {
@@ -391,7 +398,7 @@ func TestLegacyBootstrapAuthorization(t *testing.T) {
 			if tc.incarnation != nil {
 				live, liveErr = tc.incarnation(live)
 			}
-			instances := &legacyInstances{incarnation: live, err: liveErr}
+			instances := &legacyInstances{t: t, incarnation: live, err: liveErr}
 			policy := &scriptedPolicy{answers: tc.policy}
 			if tc.policy == nil {
 				policy = disabledPolicy()
@@ -439,7 +446,7 @@ func legacyOrganizations(t *testing.T, organizations ...string) []byte {
 // permissive answer is never reused by a later attempt or a second request.
 func TestLegacyBootstrapReadsPolicyForEveryAttempt(t *testing.T) {
 	policy := &scriptedPolicy{answers: []policyAnswer{{}, {enabled: true}, {err: errors.New("policy unavailable")}, {}}}
-	instances := &legacyInstances{incarnation: liveIncarnation()}
+	instances := &legacyInstances{t: t, incarnation: liveIncarnation()}
 	api, double := newKubeAPIDouble(t)
 	double.sarAllowed = true
 	controller := NewController(api, instances, policy)
@@ -488,7 +495,7 @@ func TestLegacyFailureDoesNotBlockIndependentRequests(t *testing.T) {
 	policy := &scriptedPolicy{answers: []policyAnswer{{err: errors.New("policy unavailable")}}}
 	api, double := newKubeAPIDouble(t)
 	double.sarAllowed = true
-	controller := NewController(api, &legacyInstances{incarnation: liveIncarnation()}, policy)
+	controller := NewController(api, &legacyInstances{t: t, incarnation: liveIncarnation()}, policy)
 	controller.client = &csrReadClient{
 		requests: []*certv1.CertificateSigningRequest{legacy, selfRenewal},
 		claims:   []karpv1.NodeClaim{launchedLegacyClaim(), registeredNodeClaim("other", nodeName, 42)},
@@ -501,13 +508,15 @@ func TestLegacyFailureDoesNotBlockIndependentRequests(t *testing.T) {
 	approvals := double.recordedApprovals()
 	require.Len(t, approvals, 1)
 	require.Equal(t, "csr-renewal", approvals[0].Name)
-	require.Len(t, double.recordedReviews(), 1, "only the legacy request is authorized with a SubjectAccessReview")
+	reviews := double.recordedReviews()
+	require.Len(t, reviews, 2)
+	require.Equal(t, selfNodeClientSubresource, reviews[1].Spec.ResourceAttributes.Subresource)
 }
 
-// TestTPMBootstrapRequestersNeverUseTheLegacyPath proves the TPM bootstrap
-// identities keep their own approval: the legacy checks do not run for them, so the
-// cluster policy is not read and no SubjectAccessReview or live VM read is made.
-func TestTPMBootstrapRequestersNeverUseTheLegacyPath(t *testing.T) {
+// TestTPMBootstrapRequesterGetsNoLegacyFallback proves a missing proof is never
+// treated as legacy: the TPM requesters stay rejected on a disabled cluster and
+// the policy is not even consulted.
+func TestTPMBootstrapRequesterGetsNoLegacyFallback(t *testing.T) {
 	for _, requester := range []string{nodePoolBootstrapUsername, tpmBootstrapUsername} {
 		t.Run(requester, func(t *testing.T) {
 			csr := legacyCSR(legacyRequestPEM(t, nil))
@@ -515,26 +524,26 @@ func TestTPMBootstrapRequestersNeverUseTheLegacyPath(t *testing.T) {
 			policy := disabledPolicy()
 			api, double := newKubeAPIDouble(t)
 			double.sarAllowed = true
-			instances := &legacyInstances{err: errors.New("the live VM must not be read for a TPM bootstrap identity")}
-			controller := NewController(api, instances, policy)
+			controller := NewController(api, &legacyInstances{t: t, incarnation: liveIncarnation()}, policy)
 			controller.client = &csrReadClient{request: csr, claims: []karpv1.NodeClaim{launchedLegacyClaim()}}
 
 			_, err := controller.Reconcile(context.Background())
 			require.NoError(t, err)
-			require.Zero(t, policy.reads)
+			require.Empty(t, double.recordedApprovals())
 			require.Empty(t, double.recordedReviews())
+			require.Zero(t, policy.reads)
 		})
 	}
 }
 
 // TestLegacyBootstrapRecordsEnrollment keeps the node creation controller's
 // enrollment record in step with the legacy path: an approved legacy request
-// enrolls its claim exactly like a TPM bootstrap request.
+// enrolls its claim exactly like an attested one.
 func TestLegacyBootstrapRecordsEnrollment(t *testing.T) {
 	claim := launchedLegacyClaim()
 	api, double := newKubeAPIDouble(t)
 	double.sarAllowed = true
-	controller := NewController(api, &legacyInstances{incarnation: liveIncarnation()}, disabledPolicy())
+	controller := NewController(api, &legacyInstances{t: t, incarnation: liveIncarnation()}, disabledPolicy())
 	controller.now = func() time.Time { return time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC) }
 	reads := &csrReadClient{request: legacyCSR(legacyRequestPEM(t, nil)), claims: []karpv1.NodeClaim{claim}}
 	controller.client = reads

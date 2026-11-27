@@ -29,6 +29,12 @@ kubectl describe nodeclaim <name>
 
 A NodeClaim stuck in `Pending` indicates Karpenter could not create an instance. The `status.conditions` section lists the reason.
 
+### InstanceIncarnationDrift after upgrading
+
+A launched, registered NodeClaim without a valid non-zero `karpenter.k8s.gcp/instance-numeric-id` annotation is eligible for provider drift reason `InstanceIncarnationDrift`. An earlier core drift reason, such as `NodePoolDrifted`, can take precedence, and unresolved NodePool/NodeClass state can prevent the provider check. Inspect all drifted claims rather than filtering only on this reason. Old claims need replacement, not manual annotation or VM UID-label backfill. Inspect NodeClaim conditions and disruption events for budget, node-level `do-not-disrupt`, PDB, capacity or replacement-enrollment blockers.
+
+Both dynamic and static pools can roll automatically. Static pools without replacement headroom can use delete-first when `TerminateFirstDrift` is enabled; otherwise they remain blocked. Configured `terminationGracePeriod` still bounds pod disruption protection. Check enrollment prerequisites before releasing fleet-wide drift, and do not assume replacement will finish before certificate renewal is needed. See the [upgrade procedure](../MIGRATION.md#kubelet-csr-approval-now-requires-tpm-attestation-bound-to-the-launched-vm).
+
 ### Pods still Pending after a node appears
 
 The node may not have joined the cluster yet. Check:
@@ -156,20 +162,19 @@ Karpenter discovers an existing RUNNING node pool for bootstrap metadata rather 
 
 Karpenter runs a CSR approver controller that approves kubelet client CSRs (signer `kubernetes.io/kube-apiserver-client-kubelet`) for nodes it launched. It approves a CSR when all of these are true:
 
-- The request subject is `CN=system:node:<name>` with `O=system:nodes`, and the request has no subject alternative names. The only other organizations allowed are at most one `gke:nodepool:name:<pool>` and at most one `gke:instance:<project-number>:<zone>:<id>`. GKE adds both. When they are present:
-  - The requester must already be in the `gke:nodepool:name:<pool>` group.
-  - On renewal, the node must already be in the `gke:instance:*` group. On bootstrap, the zone in `gke:instance:*` must match the NodeClaim's zone. The instance ID is not checked.
+- The request subject is `CN=system:node:<name>` with `O=system:nodes`, and the request has no subject alternative names. The only other organizations allowed are at most one `gke:nodepool:name:<pool>` and at most one `gke:instance:<project-number>:<zone>:<id>`. GKE adds both. The requester must already be in the `gke:nodepool:name:<pool>` group. On a bootstrap request the whole `gke:instance:*` organization must match the verified project number, zone and instance ID; an incomplete or partial one is rejected. On renewal the node must already be authenticated into its own `gke:instance:*` group.
 - The usages include `client auth` and are limited to `digital signature`, `key encipherment`, and `client auth`.
+- The original requester is allowed to create the matching CSR subresource, checked with a `SubjectAccessReview`.
 - One of these is true:
-  - The requester is a GKE bootstrap identity, `kubelet-nodepool-bootstrap` or `kubelet-bootstrap`, and `<name>` is the instance of a non-deleting GCE NodeClaim with `Launched=True` that has not registered yet.
-  - The exact legacy requester `kubelet` meets the [separate cluster-controlled legacy contract](security/csr-approval.md#legacy-bootstrap-with-shielded-gke-nodes-disabled): a cluster with Shielded GKE Nodes disabled, a live VM matching the NodeClaim's recorded ID and UID label, and an allowed `SubjectAccessReview`.
-  - The requester is `system:node:<name>` in the authenticated `system:nodes` group, renewing its own certificate. A GCE NodeClaim has `Registered=True`, with both its node name and GCE instance name matching `<name>`. Self-renewal remains allowed during drain/deletion.
+  - A TPM bootstrap identity supplies a valid proof for its managed claim; see [attested bootstrap verification](security/csr-approval.md#attested-bootstrap-verification).
+  - The exact legacy requester `kubelet` meets the [separate cluster-controlled legacy contract](security/csr-approval.md#legacy-un-attested-bootstrap).
+  - An authenticated node meets the [self-renewal eligibility rules](security/csr-approval.md#approval-policy), with [renewal preserved during drain](security/csr-approval.md#re-enrollment-and-rotation).
 
-Eligible NodeClaims must reference this provider's `GCENodeClass` and have a complete GCE ProviderID. See the [CSR approval security contract](security/csr-approval.md) for the authorization boundary, regression checks and remaining limitations.
+Eligible NodeClaims must reference this provider's `GCENodeClass` and have a complete GCE ProviderID. See the [CSR approval security contract](security/csr-approval.md) for the authorization boundary, trust limits, regression checks and the supported matrix.
 
-Every GKE node pool has a bootstrap credential, and every credential authenticates as `kubelet-nodepool-bootstrap` or `kubelet-bootstrap`. A node that has any of these credentials can request the name of a new Karpenter node until that node registers.
+Every GKE node pool has a bootstrap credential, and every credential authenticates as `kubelet-nodepool-bootstrap` or `kubelet-bootstrap`. Both TPM bootstrap identities require a valid TPM proof, whatever the cluster's Shielded GKE Nodes setting; a bootstrap-authenticated request picked up by another approver is outside this controller's decisions.
 
-The controller leaves every other CSR pending for GKE or a cluster administrator. If nodes fail to join with a TLS error, check whether CSR auto-approval is working:
+If nodes fail to join with a TLS error, check whether CSR auto-approval is working:
 
 ```sh
 kubectl get csr
@@ -177,9 +182,13 @@ kubectl get csr
 
 Pending CSRs for Karpenter nodes should be approved automatically. If they are stuck in `Pending`, check the Karpenter controller logs for CSR-related errors (the reason a CSR was not approved is logged at debug level) and verify:
 
-- the controller has the `certificates.k8s.io` RBAC permission to approve CSRs and, for legacy requests, the `authorization.k8s.io` permission to create `subjectaccessreviews`;
-- for a `kubelet` (legacy) request, the cluster really has Shielded GKE Nodes disabled and the controller can read the cluster (`container.clusters.get`). An enabled, absent or unreadable setting leaves the request pending, and the debug log names the reason. Re-check after changing the cluster setting: the controller reads it again on every attempt;
-- the NodeClaim has the `karpenter.k8s.gcp/instance-numeric-id` annotation and its VM carries the NodeClaim UID label. Claims launched by an earlier release have neither, so a legacy request for them stays pending; replace them. A VM created before this release is also no longer adopted by a new NodeClaim: its create reports `InstanceIncarnationUnknown` until the stale VM is deleted.
+- the controller has the `certificates.k8s.io` RBAC permission to approve CSRs and the `authorization.k8s.io` permission to create `subjectaccessreviews`;
+- the controller's GCP service account can read the VM attestation key (`compute.instances.getShieldedInstanceIdentity`), and the controller pod runs in the configured project (its metadata server supplies the project number; a `VM IDENTITY project does not match` debug reason points here);
+- the NodeClaim has the `karpenter.k8s.gcp/instance-numeric-id` annotation. Claims created before this release have none, so they cannot use attested enrollment; replace them (see [MIGRATION.md](../MIGRATION.md)). A VM created before this release is also no longer adopted by a new NodeClaim: its create reports `InstanceIncarnationUnknown` until the stale VM is deleted;
+- for a TPM-attested node, its vTPM is enabled and its Compute instance was not replaced after the claim was launched;
+- for a `kubelet` (legacy) request, the cluster really has Shielded GKE Nodes disabled and the controller can read the cluster (`container.clusters.get`). An enabled, absent or unreadable setting leaves the request pending, and the debug log names the reason. Re-check after changing the cluster setting: the controller reads it again on every attempt.
+
+[Proposal 0015](../proposals/0015-gce-instance-bound-csr-approval.md) records the supported image/GKE matrix and the pending real-GKE reissuance and drain validation.
 
 ---
 

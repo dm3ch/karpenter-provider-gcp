@@ -417,7 +417,7 @@ func TestInstanceToNodeClaim_RecordsNumericInstanceID(t *testing.T) {
 
 	nc := (&CloudProvider{}).instanceToNodeClaim(&instance.Instance{Name: "test-node", NumericID: 123456789}, nil)
 	require.Equal(t, "123456789", nc.Annotations[v1alpha1.AnnotationInstanceNumericID],
-		"the launched VM incarnation must be recorded on the NodeClaim so later checks can tell VM incarnations apart")
+		"the launched VM incarnation must be recorded on the NodeClaim for attested CSR approval")
 
 	legacy := (&CloudProvider{}).instanceToNodeClaim(&instance.Instance{Name: "legacy-node"}, nil)
 	_, recorded := legacy.Annotations[v1alpha1.AnnotationInstanceNumericID]
@@ -466,7 +466,7 @@ func TestLegacyInstanceStillServedForCleanup(t *testing.T) {
 // TestCreateRefusesLegacyAdoptedInstanceWithoutIncarnation guards the launch
 // boundary: adopting a VM that predates incarnation tracking must fail with an
 // actionable error instead of returning a NodeClaim that core marks Launched and
-// that can never be bound to a VM incarnation.
+// that can never complete attested enrollment.
 func TestCreateRefusesLegacyAdoptedInstanceWithoutIncarnation(t *testing.T) {
 	t.Parallel()
 

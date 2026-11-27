@@ -63,8 +63,9 @@ const (
 	// nodeClientSubresource is the authorization subresource checked for
 	// bootstrap-authenticated enrollment. GKE's TPM bootstrap credential is
 	// granted nodeclient, not selfnodeclient.
-	nodeClientSubresource = "nodeclient"
-	csrRequestTimeout     = 30 * time.Second
+	nodeClientSubresource     = "nodeclient"
+	selfNodeClientSubresource = "selfnodeclient"
+	csrRequestTimeout         = 30 * time.Second
 )
 
 var (
@@ -86,11 +87,13 @@ type kubeletClientSubject struct {
 	instanceOrg string
 }
 
-// IdentityProvider resolves fresh Compute Engine evidence for a live VM, always read
-// from the API and never from the name-keyed instance cache.
+// IdentityProvider resolves fresh Compute Engine evidence for a live VM.
 // *instance.DefaultProvider implements it.
 type IdentityProvider interface {
-	// GetIncarnation returns the live VM incarnation and ownership label.
+	// GetIdentity returns attestation identity evidence for TPM bootstrap.
+	GetIdentity(ctx context.Context, zone, name string) (*instance.InstanceIdentity, error)
+	// GetIncarnation returns the VM incarnation and ownership label for legacy
+	// bootstrap, which has no attestation key.
 	GetIncarnation(ctx context.Context, zone, name string) (*instance.InstanceIncarnation, error)
 }
 
@@ -114,8 +117,9 @@ type ShieldedPolicyProvider interface {
 //
 // Differences from that implementation, required by standalone Karpenter VMs:
 // cluster membership is the managed NodeClaim and its recorded VM incarnation
-// instead of a cluster-managed instance group; no serving certificate or
-// stale-node path is implemented. Google's legacy un-attested
+// instead of a cluster-managed instance group; the stable Compute
+// getShieldedInstanceIdentity API supplies the attestation key; no serving
+// certificate or stale-node path is implemented. Google's legacy un-attested
 // bootstrap validator (requester "kubelet") is adapted, not copied: it is only
 // reachable while a fresh read of the cluster's Shielded GKE Nodes policy says
 // disabled, and it additionally requires a strict plain request, exactly one
@@ -256,8 +260,8 @@ func (c *Controller) recordEnrollment(ctx context.Context, nodeClaim *karpv1.Nod
 }
 
 // recordMissedEnrollments records enrollment for NodeClaims whose bootstrap CSR this
-// controller already approved but whose annotation write failed. The authorization
-// checks ran when the request was approved, so only the request
+// controller already approved but whose annotation write failed. The attestation
+// and authorization checks ran when the request was approved, so only the request
 // shape and the claim's initial-enrollment lifecycle are re-checked here: a claim
 // that has since registered, or a CSR approved by someone else, never gets the
 // annotation.
@@ -346,7 +350,10 @@ func (c *Controller) authorizeKubeletClientCSR(ctx context.Context, csr *certv1.
 		if err := validateRenewal(subject, groups, nodeClaims); err != nil {
 			return "", nil, err
 		}
-		return "", nil, nil
+		if err := c.authorizeCreate(ctx, csr, selfNodeClientSubresource); err != nil {
+			return "", nil, err
+		}
+		return selfNodeClientSubresource, nil, nil
 	}
 
 	return c.authorizeBootstrap(ctx, csr, request, subject, nodeClaims)
@@ -366,11 +373,17 @@ func (c *Controller) authorizeBootstrap(ctx context.Context, csr *certv1.Certifi
 	if csr.Spec.Username != nodePoolBootstrapUsername && csr.Spec.Username != tpmBootstrapUsername {
 		return "", nil, fmt.Errorf("requester %q cannot request a certificate for node %q", csr.Spec.Username, subject.nodeName)
 	}
-	nodeClaim, err := validateBootstrap(subject, nodeClaims)
+	nodeClaim, err := c.validateAttestedBootstrap(ctx, csr, request, subject, nodeClaims)
 	if err != nil {
 		return "", nil, err
 	}
-	return "", nodeClaim, nil
+	if err := c.authorizeCreate(ctx, csr, nodeClientSubresource); err != nil {
+		return "", nil, err
+	}
+	if !isInitialEnrollment(nodeClaim) {
+		return nodeClientSubresource, nil, nil
+	}
+	return nodeClientSubresource, nodeClaim, nil
 }
 
 // validateKubeletClientRequest applies the request-level rules shared by both
@@ -393,6 +406,42 @@ func validateKubeletClientRequest(csr *certv1.CertificateSigningRequest) (kubele
 		return kubeletClientSubject{}, nil, nil, fmt.Errorf("requester %q is not in group %q", csr.Spec.Username, subject.nodePoolOrg)
 	}
 	return subject, request, groups, nil
+}
+
+// validateAttestedBootstrap requires a valid TPM attestation proof for a
+// bootstrap-authenticated request and binds it to the NodeClaim's recorded VM
+// incarnation. There is no un-attested fallback for either bootstrap username.
+func (c *Controller) validateAttestedBootstrap(ctx context.Context, csr *certv1.CertificateSigningRequest, request *x509.CertificateRequest, subject kubeletClientSubject, nodeClaims []karpv1.NodeClaim) (*karpv1.NodeClaim, error) {
+	nodeClaim := findBootstrapNodeClaim(subject, nodeClaims)
+	if nodeClaim == nil {
+		return nil, fmt.Errorf("no NodeClaim was launched for node %q", subject.nodeName)
+	}
+
+	proof, err := parseAttestationEnvelope(csr.Spec.Request, request)
+	if err != nil {
+		return nil, fmt.Errorf("parsing TPM attestation proof: %w", err)
+	}
+
+	recordedID, err := recordedIncarnation(nodeClaim)
+	if err != nil {
+		return nil, err
+	}
+
+	project, zone, instanceName := parseProviderID(nodeClaim.Status.ProviderID)
+	if project == "" || zone == "" || instanceName != subject.nodeName {
+		return nil, fmt.Errorf("NodeClaim %q has no complete GCE identity for node %q", nodeClaim.Name, subject.nodeName)
+	}
+	if err := validateProofIdentity(proof, project, zone, instanceName, recordedID); err != nil {
+		return nil, err
+	}
+	if err := validateBootstrapLifecycle(nodeClaim, subject); err != nil {
+		return nil, err
+	}
+
+	if err := c.verifyAttestedIdentity(ctx, nodeClaim, subject, proof, request, recordedID); err != nil {
+		return nil, err
+	}
+	return nodeClaim, nil
 }
 
 // authorizeLegacyBootstrap approves initial enrollment without TPM attestation
@@ -448,7 +497,8 @@ func validateLegacyRequest(csr *certv1.CertificateSigningRequest, request *x509.
 }
 
 // validateLegacyLifecycle restricts legacy enrollment to the initial credential of
-// a launched claim. It never serves a registered or draining claim.
+// a launched claim. Unlike attested re-enrollment it never serves a registered or
+// draining claim.
 func validateLegacyLifecycle(nodeClaim *karpv1.NodeClaim) error {
 	if !nodeClaim.DeletionTimestamp.IsZero() || !nodeClaim.StatusConditions().Get(karpv1.ConditionTypeLaunched).IsTrue() {
 		return fmt.Errorf("NodeClaim %q is deleting or has not launched", nodeClaim.Name)
@@ -507,6 +557,80 @@ func (c *Controller) requireShieldedNodesDisabled(ctx context.Context) error {
 	return nil
 }
 
+// verifyAttestedIdentity completes the attested checks that need the live VM:
+// the requested instance organization, the authoritative identity and the TPM
+// proof itself.
+func (c *Controller) verifyAttestedIdentity(ctx context.Context, nodeClaim *karpv1.NodeClaim, subject kubeletClientSubject, proof attestationProof, request *x509.CertificateRequest, recordedID uint64) error {
+	_, _, instanceName := parseProviderID(nodeClaim.Status.ProviderID)
+	identity, err := c.lookupAttestationIdentity(ctx, nodeClaim, proof, recordedID)
+	if err != nil {
+		return err
+	}
+	// Bootstrap credentials are not authenticated into the requested instance
+	// group, so the whole organization has to be authorized from the verified VM.
+	if err := validateInstanceOrganization(subject, identity.ProjectNumber, identity.Zone, identity.NumericID); err != nil {
+		return err
+	}
+	attestationKey, err := parseAttestationKey(identity.AttestationKeyPEM)
+	if err != nil {
+		return fmt.Errorf("reading the attestation key of instance %q: %w", instanceName, err)
+	}
+	return verifyAttestationProof(proof, request, attestationKey)
+}
+
+// validateInstanceOrganization binds a requested gke:instance organization to the
+// verified VM incarnation. The organization names a project number, zone and
+// instance ID that the approved certificate carries into the node's authenticated
+// groups, so all three must match authoritative identity rather than only the zone.
+func validateInstanceOrganization(subject kubeletClientSubject, projectNumber uint64, zone string, numericID uint64) error {
+	if subject.instanceOrg == "" {
+		return nil
+	}
+	orgProject, orgZone, orgID, err := parseInstanceOrg(subject.instanceOrg)
+	if err != nil {
+		return err
+	}
+	if orgProject != projectNumber || orgZone != zone || orgID != numericID {
+		return fmt.Errorf("subject organization %q does not match the verified instance %d/%s/%d", subject.instanceOrg, projectNumber, zone, numericID)
+	}
+	return nil
+}
+
+// validateProofIdentity rejects a proof for another project, zone, VM name or
+// VM incarnation. The expected values never come from the proof itself.
+func validateProofIdentity(proof attestationProof, project, zone, instanceName string, recordedID uint64) error {
+	if proof.vm.Name != instanceName || proof.vm.Zone != zone {
+		return fmt.Errorf("VM IDENTITY %s/%s does not match the requested instance %s/%s", proof.vm.ProjectID, proof.vm.Zone, project, zone)
+	}
+	if proof.vm.ProjectID != project {
+		return fmt.Errorf("VM IDENTITY project %q does not match the configured project %q", proof.vm.ProjectID, project)
+	}
+	if proof.vm.ID != recordedID {
+		return fmt.Errorf("VM IDENTITY instance %d does not match the recorded launch instance %d of NodeClaim %q", proof.vm.ID, recordedID, instanceName)
+	}
+	return nil
+}
+
+// lookupAttestationIdentity reads the live VM identity and attestation evidence
+// and requires them to describe the incarnation the NodeClaim recorded.
+func (c *Controller) lookupAttestationIdentity(ctx context.Context, nodeClaim *karpv1.NodeClaim, proof attestationProof, recordedID uint64) (*instance.InstanceIdentity, error) {
+	_, zone, instanceName := parseProviderID(nodeClaim.Status.ProviderID)
+	identity, err := c.identityProvider.GetIdentity(ctx, zone, instanceName)
+	if err != nil {
+		return nil, &retryableError{fmt.Errorf("reading the identity of instance %q: %w", instanceName, err)}
+	}
+	if identity == nil {
+		return nil, fmt.Errorf("instance %q for NodeClaim %q does not exist", instanceName, nodeClaim.Name)
+	}
+	if identity.ProjectID != proof.vm.ProjectID || identity.ProjectNumber != proof.vm.ProjectNumber {
+		return nil, fmt.Errorf("VM IDENTITY project does not match the configured cluster project")
+	}
+	if identity.NumericID != recordedID || identity.Zone != zone || identity.Name != instanceName {
+		return nil, fmt.Errorf("live instance %q identity does not match the recorded launch instance %d of NodeClaim %q", instanceName, recordedID, nodeClaim.Name)
+	}
+	return identity, nil
+}
+
 // findBootstrapNodeClaim returns the managed NodeClaim launched for the requested
 // node name. Bootstrap-authenticated requests never select a claim by any other
 // property supplied by the requester.
@@ -526,7 +650,7 @@ func findBootstrapNodeClaim(subject kubeletClientSubject, nodeClaims []karpv1.No
 func recordedIncarnation(nodeClaim *karpv1.NodeClaim) (uint64, error) {
 	recorded := nodeClaim.Annotations[v1alpha1.AnnotationInstanceNumericID]
 	if recorded == "" {
-		return 0, fmt.Errorf("NodeClaim %q has no recorded VM instance ID; only claims launched by this controller can be bound to a VM incarnation", nodeClaim.Name)
+		return 0, fmt.Errorf("NodeClaim %q has no recorded VM instance ID; only claims launched by this controller can use attested enrollment", nodeClaim.Name)
 	}
 	id, err := strconv.ParseUint(recorded, 10, 64)
 	if err != nil || id == 0 {
@@ -583,29 +707,23 @@ func validateRenewal(subject kubeletClientSubject, groups sets.Set[string], node
 	return fmt.Errorf("no NodeClaim is registered as node %q", subject.nodeName)
 }
 
-// validateBootstrap authorizes a request from a GKE TPM bootstrap identity for the
-// initial enrollment of a launched, unregistered NodeClaim of the requested node.
-// This is the existing approval for these identities; requiring a TPM proof for
-// them is a separate change.
-func validateBootstrap(subject kubeletClientSubject, nodeClaims []karpv1.NodeClaim) (*karpv1.NodeClaim, error) {
-	for i := range nodeClaims {
-		nc := &nodeClaims[i]
-		_, zone, instance := parseProviderID(nc.Status.ProviderID)
-		if !isManagedNodeClaim(nc) || instance != subject.nodeName {
-			continue
+// validateBootstrapLifecycle restricts an attested bootstrap request either to
+// initial enrollment of a launched claim or to re-enrollment of the same live,
+// registered claim, which stays possible while the node drains.
+func validateBootstrapLifecycle(nodeClaim *karpv1.NodeClaim, subject kubeletClientSubject) error {
+	if nodeClaim.StatusConditions().Get(karpv1.ConditionTypeRegistered).IsTrue() {
+		if nodeClaim.Status.NodeName != "" && nodeClaim.Status.NodeName != subject.nodeName {
+			return fmt.Errorf("NodeClaim %q is registered as node %q", nodeClaim.Name, nodeClaim.Status.NodeName)
 		}
-		if !nc.DeletionTimestamp.IsZero() || !nc.StatusConditions().Get(karpv1.ConditionTypeLaunched).IsTrue() {
-			return nil, fmt.Errorf("NodeClaim %q is deleting or has not launched", nc.Name)
-		}
-		if nc.Status.NodeName != "" || nc.StatusConditions().Get(karpv1.ConditionTypeRegistered).IsTrue() {
-			return nil, fmt.Errorf("NodeClaim %q for node %q is already registered", nc.Name, subject.nodeName)
-		}
-		if subject.instanceOrg != "" && instanceOrgZone(subject.instanceOrg) != zone {
-			return nil, fmt.Errorf("subject organization %q is not in NodeClaim %q zone %q", subject.instanceOrg, nc.Name, zone)
-		}
-		return nc, nil
+		return nil
 	}
-	return nil, fmt.Errorf("no NodeClaim was launched for node %q", subject.nodeName)
+	if !nodeClaim.DeletionTimestamp.IsZero() || !nodeClaim.StatusConditions().Get(karpv1.ConditionTypeLaunched).IsTrue() {
+		return fmt.Errorf("NodeClaim %q is deleting or has not launched", nodeClaim.Name)
+	}
+	if nodeClaim.Status.NodeName != "" {
+		return fmt.Errorf("NodeClaim %q for node %q is already registered", nodeClaim.Name, subject.nodeName)
+	}
+	return nil
 }
 
 func isManagedNodeClaim(nc *karpv1.NodeClaim) bool {
@@ -668,12 +786,18 @@ func parseKubeletClientSubject(commonName string, organizations []string) (kubel
 	return subject, nil
 }
 
-func instanceOrgZone(org string) string {
+// parseInstanceOrg parses O=gke:instance:<project-number>:<zone>:<instance-id>.
+func parseInstanceOrg(org string) (projectNumber uint64, zone string, numericID uint64, err error) {
 	parts := strings.Split(strings.TrimPrefix(org, instanceOrgPrefix), ":")
 	if len(parts) != 3 {
-		return ""
+		return 0, "", 0, fmt.Errorf("subject organization %q is not a complete GCE instance identity", org)
 	}
-	return parts[1]
+	projectNumber, projectErr := strconv.ParseUint(parts[0], 10, 64)
+	numericID, idErr := strconv.ParseUint(parts[2], 10, 64)
+	if projectErr != nil || idErr != nil || projectNumber == 0 || numericID == 0 || parts[1] == "" {
+		return 0, "", 0, fmt.Errorf("subject organization %q is not a complete GCE instance identity", org)
+	}
+	return projectNumber, parts[1], numericID, nil
 }
 
 func parseProviderID(providerID string) (project, zone, instance string) {

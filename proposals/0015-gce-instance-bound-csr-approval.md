@@ -1,18 +1,9 @@
 # Proposal: GCE instance-bound kubelet CSR approval
 
-- **Status**: Provisional
+- **Status**: Implemented
 - **Authors**: @dm3ch
 - **Created**: 2026-11-18
 - **Related Issues**: [#778](https://github.com/karpenter-gcp/karpenter-provider-gcp/issues/778)
-
-## Implementation stages
-
-The design is implemented in stages so each change can be reviewed on its own:
-
-1. Record the launched VM's numeric ID and NodeClaim UID, and approve the legacy `kubelet` requester on clusters with Shielded GKE Nodes disabled (this stage).
-2. Require the TPM attestation proof for the two TPM bootstrap identities, with the IAM prerequisite and node replacement described below (a follow-up; the status becomes Implemented when it lands).
-
-Sections below describe the complete design; the legacy stage ships first and changes no approval that works today.
 
 ## Summary
 
