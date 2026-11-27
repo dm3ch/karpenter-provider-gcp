@@ -111,11 +111,9 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *karpv1.NodeClaim)
 	if err != nil {
 		return nil, err
 	}
-	if readinessErr != nil {
-		instanceType, err = c.applyAdoptedNodeOverlay(ctx, nodeClaim, instanceType)
-		if err != nil {
-			return nil, err
-		}
+	instanceType, err = c.applyAdoptedNodeOverlay(ctx, nodeClaim, instanceType, readinessErr != nil)
+	if err != nil {
+		return nil, err
 	}
 
 	if err := checkLaunchableIncarnation(nodeClaim, inst); err != nil {
@@ -169,8 +167,8 @@ func checkLaunchableIncarnation(nodeClaim *karpv1.NodeClaim, inst *instance.Inst
 		"InstanceIncarnationMismatch", "The instance for this NodeClaim is a different VM incarnation")
 }
 
-func (c *CloudProvider) applyAdoptedNodeOverlay(ctx context.Context, nodeClaim *karpv1.NodeClaim, instanceType *cloudprovider.InstanceType) (*cloudprovider.InstanceType, error) {
-	if instanceType == nil || !karpoptions.FromContext(ctx).FeatureGates.NodeOverlay {
+func (c *CloudProvider) applyAdoptedNodeOverlay(ctx context.Context, nodeClaim *karpv1.NodeClaim, instanceType *cloudprovider.InstanceType, adopted bool) (*cloudprovider.InstanceType, error) {
+	if !adopted || instanceType == nil || !karpoptions.FromContext(ctx).FeatureGates.NodeOverlay {
 		return instanceType, nil
 	}
 	nodePoolName, ok := nodeClaim.Labels[karpv1.NodePoolLabelKey]
