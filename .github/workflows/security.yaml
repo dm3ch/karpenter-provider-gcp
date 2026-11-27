@@ -200,6 +200,26 @@ jobs:
           path: govulncheck.sarif
           if-no-files-found: error
 
+  osv-scan:
+    name: OSV (hack/ Go modules)
+    # govulncheck covers the shipped root module and never sees the hack/ tool
+    # modules, but OpenSSF Scorecard flags any vulnerable version in them.
+    # The reusable workflow scans, fails on findings and, outside pull requests,
+    # uploads SARIF to code scanning.
+    permissions:
+      actions: read # The reusable workflow's upload step reads workflow run details.
+      contents: read
+      security-events: write # Upload SARIF to code scanning outside pull requests.
+    # Pinned by commit: gh actions-lock cannot lock reusable workflows from
+    # other repositories (github/gh-actions-lock#179). Dependabot bumps the SHA.
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@32d3cd482bdadfb38b186c0ad1b031902d55d932 # v2.7.1
+    with:
+      scan-args: |-
+        -r
+        --no-call-analysis=go
+        hack
+      upload-sarif: ${{ github.event_name != 'pull_request' }}
+
   container-image:
     name: Grype (linux/${{ matrix.arch }})
     runs-on: ubuntu-latest
