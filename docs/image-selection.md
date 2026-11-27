@@ -69,7 +69,8 @@ imageSelectorTerms:
 
 # Ubuntu 24.04 pinned to a specific date build
 imageSelectorTerms:
-  - family: Ubuntu2404
+  - family: Ubuntu
+    osVersion: "24.04"
     version: "v20260416"
 ```
 
@@ -77,7 +78,8 @@ Use `version: latest` to select the newest image for the cluster's Kubernetes ve
 
 ```yaml
 imageSelectorTerms:
-  - family: Ubuntu2404
+  - family: Ubuntu
+    osVersion: "24.04"
     version: latest
 ```
 
@@ -95,7 +97,7 @@ imageSelectorTerms:
 Resolved `status.images[]` rows include `kubernetesVersion`, the core GKE release to install with that image. The controller keeps image and release together through caching and launch; it does not reread a new master version after selecting an older cached image.
 
 - **Official COS images:** use the selected image's GKE release, not necessarily the master's exact patch/build. This preserves channel, milestone and explicit image pins. Modern official names with a two-digit Kubernetes minor are decoded, including multi-digit patches; ambiguous historical formats are not guessed.
-- **Ubuntu:** use one exact API-server version snapshot for both minor-scoped image discovery and bootstrap. An Ubuntu date pin fixes the OS image, not the kubelet release. Existing image-project/catalog selection is unchanged; the separate Ubuntu image-catalog migration for GKE1.36 is not included.
+- **Ubuntu:** use one exact API-server version snapshot for both minor-scoped image discovery and bootstrap. An Ubuntu date pin fixes the OS image, not the kubelet release. Image discovery uses the Ubuntu image project that serves that minor (see [OS families](#os-families)).
 - **Opaque custom image IDs:** keep the pinned image/architecture and use an exact API-server version snapshot. A custom-project image is not treated as official COS merely because its name resembles one. Custom images must be compatible with the chosen bootstrap release.
 
 Core server/manifests URLs and hashes, `KUBELET_VERSION`, `configure-sh` and `user-data` come from the selected release's public GKE distribution, not the source pool. Legacy SALT fields and the competing source startup script are not inherited. Other source runtime policy, including `RENDERED_INSTALLABLES`, remains unchanged under the accepted compatibility assumption; see [Bootstrap pool selection](bootstrap-pool.md#core-bootstrap-release-and-architecture).
@@ -103,6 +105,19 @@ Core server/manifests URLs and hashes, `KUBELET_VERSION`, `configure-sh` and `us
 The controller needs HTTPS access to `https://storage.googleapis.com/gke-release/kubernetes/release/` for small scripts and checksum sidecars. It caches complete verified bundles with a bounded cache. Nodes use matching preloads or fetch the corresponding archives; an artifact lookup/integrity failure stops a new launch rather than falling back to source artifacts or marking capacity unavailable. No new mirror/alternate-universe endpoint setting is introduced.
 
 Upgrade CRDs before the controller, then allow normal image-status refresh. Old CRDs can prune the new field; a new launch with an incomplete row waits for reconciliation. Existing VMs remain adoptable without a current artifact lookup. A release-only change with the same image does not introduce drift or replace running nodes.
+
+## Ubuntu per-patch images
+
+For GKE 1.36 and later, Karpenter prefers the per-patch image GKE publishes for your cluster's exact GKE version (`gke-<version>-gke<build>-ubuntu-<release>-…-c-pre` in `gke-ubuntu-node-images`). It is the image GKE boots its own Ubuntu node pools with: the plain base image with that release's node components preloaded. It is resolved per architecture and shown in `status.images` like any other image.
+
+**Faster startup.** Measured on a 1.36 cluster (`n2-standard-2`, same base build, provider-default boot disk), a node was Ready about 80 seconds after its VM was created with the per-patch image, against about 204 seconds with the plain image: roughly 2.5 times faster, and a pending pod was Running after about 136 seconds instead of 250. The plain image downloads the components at boot; the per-patch image has them preloaded. Samples are small (three to five runs per setup, one cluster).
+
+- **When it is used:** only when GKE published a per-patch image for the master's exact version and the selected release. Otherwise, including older GKE versions or a master patch released moments ago, the plain image is used and nothing else changes. A lookup that fails (API error) fails image resolution like any other image lookup, so `ImagesReady` turns false and the node class retries, rather than quietly switching nodes to another image.
+- **Base build:** it is the build GKE published for your master version, so it follows GKE's patch cadence and can be older than the newest plain build. If several base builds exist for one GKE version, the newest is used. Set `version: vYYYYMMDD` to choose a base build; a pin uses the per-patch image of that date when GKE published one, otherwise the plain image of that date.
+- **Replacement:** nodes are replaced when the OS build (release, architecture, base date) changes, not when the packaging changes: a node on a plain image is not replaced by the per-patch image of the same base build.
+- **Boot disk size:** the per-patch image is 12 GiB (the plain image 10 GiB), and GCE rejects a smaller boot disk, so an explicit Ubuntu boot disk (`disks[].boot: true`) of 10 or 11 GiB fails to launch on GKE 1.36+, with the NodeClaim reason and Warning event `BootDiskTooSmall` ([troubleshooting](troubleshooting.md#nodeclaim-launch-fails-with-bootdisktoosmall)); set `sizeGiB` to 12 or more. The plain image downloads the same components at boot, so such a small disk is not practical with either image. COS per-patch images are already larger (15 GiB).
+- **Catalog quota:** the lookup is one cached scan of the image list without server-side filters, newest first, until it is past the images published for your version (a version with no per-patch image reads the whole list, about 20 pages, once per 10 minutes). Hits are cached for an hour; a cached image is rechecked on every resolution and the scan is repeated if it was deleted or deprecated. There is no page limit, because the image of a master patch a few weeks old sits thousands of images deep, and a limit would silently switch such clusters to the plain image.
+- **Boot disk matters too:** with no `disks[].category`, the provider boots on `pd-standard`, which made nodes start about 20 seconds slower in the same measurement; setting `category: pd-balanced` (GKE's usual default) brought Karpenter within about 6 seconds of a GKE-managed Ubuntu pool.
 
 ## Container-Optimized OS variants
 
@@ -116,23 +131,31 @@ Successful results are cached for five minutes, so newly published variants and 
 
 ## OS families
 
-| Family                 | OS                     | Notes                            |
-|------------------------|------------------------|----------------------------------|
-| `ContainerOptimizedOS` | Container-Optimized OS | Supports `channel` and `version` |
-| `Ubuntu2404`           | Ubuntu 24.04 LTS       | Supports `version` only          |
-| `Ubuntu2204`           | Ubuntu 22.04 LTS       | Supports `version` only          |
+| Family                 | OS                     | Notes                                                                                                           |
+|------------------------|------------------------|-----------------------------------------------------------------------------------------------------------------|
+| `ContainerOptimizedOS` | Container-Optimized OS | Supports `channel` and `version`                                                                                |
+| `Ubuntu`               | Ubuntu                 | Optional `osVersion` (`22.04`, `24.04`, `26.04` or `default`; omitted means `default`); supports `version` only |
+| `Ubuntu2404`           | Ubuntu 24.04 LTS       | **Deprecated.** Same as `Ubuntu` with `osVersion: "24.04"`                                                      |
+| `Ubuntu2204`           | Ubuntu 22.04 LTS       | **Deprecated.** Same as `Ubuntu` with `osVersion: "22.04"`                                                      |
 
-The bare `Ubuntu` family name is not supported. Use `Ubuntu2404` or `Ubuntu2204` explicitly.
+`osVersion` is a fixed release (`"22.04"`, `"24.04"`, `"26.04"`) or `default`. **Omitting it for `Ubuntu` means `default`**, as for a GKE node pool that names only the image type. It is rejected for other families:
 
-> **Ubuntu:** Both architectures must resolve from `ubuntu-os-gke-cloud` for the cluster's Kubernetes minor version. Only clean `vYYYYMMDD` builds, optionally with a trailing letter (for example, `v20260416a`), are selected, excluding specialized builds such as `-tpu`, `-cgroupsv1`, and `-linux64k`. A pin matches one build exactly, so pin a lettered build with its letter (`version: v20260416a`). A missing or `PENDING` catalog architecture yields `ImageResolutionFailed`; a selected image becoming non-READY on final lookup yields `ImageUnavailable`. Final-lookup 404s are omitted. Before pinning a date, [confirm it exists for both architectures](image-management.md#finding-available-versions).
+- **A fixed release** never changes on its own. Changing it is an explicit image change: nodes drift and are replaced under your disruption budgets.
+- **`default`** is the Ubuntu release GKE itself uses for the cluster's Kubernetes version, as verified by this Karpenter release. GKE documents it as 22.04 before 1.32.1 and 24.04 from 1.32.1-gke.1002000. It follows GKE, so a cluster upgrade across a version where GKE moves its default changes the release and drifts nodes to the new image, as it would for a GKE-managed Ubuntu node pool. For cluster versions outside the range this release has verified (above Kubernetes 1.37), `default` uses GKE's current documented default, 24.04, and the controller logs a warning; it does not guess a newer release, and if no 24.04 image exists for that version (for example 1.38) it fails with `ImageResolutionFailed` and you set `osVersion` explicitly. It is deliberately not "the newest release with images": that would pick 24.04 on 1.31 (where GKE defaults to 22.04) and 26.04 on 1.37, and would change your OS when Google publishes images rather than when you upgrade.
+- **Omitted** is the same as `default`. Pin a fixed release if you need the OS to stay the same across cluster upgrades. The legacy `Ubuntu@...` alias is different: it is always 24.04, so on 1.31 (GKE default 22.04) the two disagree.
+
+The format is `NN.04` or `default`; a release Karpenter does not know yet fails image resolution with the supported releases listed, and adding one needs no CRD change. `version` still pins the build within that release. The deprecated `Ubuntu2404` and `Ubuntu2204` families and the `Ubuntu@...` alias (always Ubuntu 24.04) keep working and resolve identically to the matching fixed release; switching a NodeClass between the spellings does not drift nodes.
+
+> **Ubuntu:** Both architectures must resolve for the cluster's Kubernetes minor version from the project GKE publishes Ubuntu images in: `ubuntu-os-gke-cloud` for Kubernetes before 1.36 and `gke-ubuntu-node-images` for 1.36 and later. The controller needs permission to read that project's images, and a trusted-image-project policy or VPC Service Controls perimeter must allow it. The two projects are never mixed or used as a fallback for each other. Only clean `vYYYYMMDD` builds, optionally with a trailing letter (for example, `v20260416a`), are selected, excluding specialized builds such as `-tpu`, `-cgroupsv1`, `-linux64k`, `-64k`, `-hwe`, and `-acs`. A pin matches one build exactly, so pin a lettered build with its letter (`version: v20260416a`). A missing or `PENDING` catalog architecture yields `ImageResolutionFailed`; a selected image becoming non-READY on final lookup yields `ImageUnavailable`. Final-lookup 404s are omitted. Before pinning a date, [confirm it exists for both architectures](image-management.md#finding-available-versions).
+>
+> **Release availability:** GKE publishes each Ubuntu release only for some Kubernetes minors, and a release is never substituted for another. As of November 2026, Ubuntu 22.04 images exist only through Kubernetes 1.31, Ubuntu 24.04 from 1.31 through 1.37, and Ubuntu 26.04 for 1.37 and 1.38 (1.38 is an alpha-only minor), so `osVersion: "24.04"` finds no image on a 1.38 cluster. In that case `ImageResolutionFailed` names the release and project; move the NodeClass to the series that has images for your cluster version.
 
 ## Version formats
 
-| Family                 | `version: latest`                           | Version pin format                    | Example                   |
-|------------------------|---------------------------------------------|---------------------------------------|---------------------------|
-| `ContainerOptimizedOS` | Newest usable COS image per variant         | `milestone.build.build.build`         | `125.19216.104.126`       |
-| `Ubuntu2404`           | Newest Ubuntu 24.04 for cluster's K8s minor | `vYYYYMMDD`, optional trailing letter | `v20260416`, `v20251218a` |
-| `Ubuntu2204`           | Newest Ubuntu 22.04 for cluster's K8s minor | `vYYYYMMDD`, optional trailing letter | `v20231201`, `v20251218a` |
+| Family                   | `version: latest`                                    | Version pin format                    | Example                   |
+|--------------------------|------------------------------------------------------|---------------------------------------|---------------------------|
+| `ContainerOptimizedOS`   | Newest usable COS image per variant                  | `milestone.build.build.build`         | `125.19216.104.126`       |
+| `Ubuntu` (+ `osVersion`) | Newest image of that release for cluster's K8s minor | `vYYYYMMDD`, optional trailing letter | `v20260416`, `v20251218a` |
 
 ## Examples
 
@@ -158,7 +181,8 @@ metadata:
   name: ubuntu
 spec:
   imageSelectorTerms:
-    - family: Ubuntu2404
+    - family: Ubuntu
+      osVersion: "24.04"
       version: latest
 ```
 
@@ -200,7 +224,7 @@ The `alias` field is deprecated. Migrate to the new structured fields:
 | Old syntax                                      | New syntax                                                       |
 |-------------------------------------------------|------------------------------------------------------------------|
 | `alias: ContainerOptimizedOS@latest`            | `family: ContainerOptimizedOS`<br>`version: latest`              |
-| `alias: Ubuntu@latest`                          | `family: Ubuntu2404`<br>`version: latest`                        |
+| `alias: Ubuntu@latest`                          | `family: Ubuntu`<br>`osVersion: "24.04"`<br>`version: latest`    |
 | `alias: ContainerOptimizedOS@125.19216.104.126` | `family: ContainerOptimizedOS`<br>`version: "125.19216.104.126"` |
 
 The `alias` field continues to work but will be removed in a future release. New configurations should use `family` with `channel` or `version`.

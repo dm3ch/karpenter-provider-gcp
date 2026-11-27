@@ -100,6 +100,9 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *karpv1.NodeClaim)
 
 	inst, instanceTypes, err := c.createOrAdoptInstance(ctx, nodeClaim, nodeClass, readinessErr)
 	if err != nil {
+		if createErr, ok := stderrors.AsType[*cloudprovider.CreateError](err); ok && createErr.ConditionReason == instance.BootDiskTooSmallReason {
+			c.recorder.Publish(cloudproviderevents.NodeClaimBootDiskTooSmall(nodeClaim, createErr.Unwrap()))
+		}
 		return nil, err
 	}
 

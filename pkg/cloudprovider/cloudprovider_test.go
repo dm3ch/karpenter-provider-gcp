@@ -18,6 +18,7 @@ package cloudprovider
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -29,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	karpcloudprovider "sigs.k8s.io/karpenter/pkg/cloudprovider"
+	"sigs.k8s.io/karpenter/pkg/events"
 	karpopts "sigs.k8s.io/karpenter/pkg/operator/options"
 	"sigs.k8s.io/karpenter/pkg/scheduling"
 
@@ -264,6 +266,60 @@ func TestCreateMatchesAdoptedCountOutsideFilteredCandidates(t *testing.T) {
 			}
 			require.NoError(t, err)
 			require.Equal(t, "0", got.Labels[v1alpha1.LabelInstanceLocalSsdCount], "adoption must use the VM's count even when the current NodeClass filters its variant")
+		})
+	}
+}
+
+type failingInstanceProvider struct {
+	instance.Provider
+	err error
+}
+
+func (p failingInstanceProvider) Create(context.Context, *v1alpha1.GCENodeClass, *karpv1.NodeClaim, []*karpcloudprovider.InstanceType) (*instance.Instance, error) {
+	return nil, p.err
+}
+
+type capturingEvents struct{ published []events.Event }
+
+func (c *capturingEvents) Publish(evts ...events.Event) { c.published = append(c.published, evts...) }
+
+// TestCreatePublishesBootDiskTooSmallEvent protects the operator signal for a boot disk GCE rejects
+// as smaller than its image: a Warning event on the NodeClaim, and none for other launch failures.
+func TestCreatePublishesBootDiskTooSmallEvent(t *testing.T) {
+	t.Parallel()
+
+	it := variantInstanceType("n2d-standard-8", "0")
+	it.Overhead = &karpcloudprovider.InstanceTypeOverhead{}
+	it.Offerings = karpcloudprovider.Offerings{&karpcloudprovider.Offering{Available: true, Requirements: scheduling.NewRequirements()}}
+	nodeClass := &v1alpha1.GCENodeClass{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	nodeClass.StatusConditions().SetTrue(v1alpha1.ConditionTypeImagesReady)
+	claim := &karpv1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Name: "claim", UID: "uid"}, Spec: karpv1.NodeClaimSpec{
+		NodeClassRef: &karpv1.NodeClassReference{Group: "karpenter.k8s.gcp", Kind: "GCENodeClass", Name: "default"},
+	}}
+
+	for _, tc := range []struct {
+		name      string
+		err       error
+		wantEvent bool
+	}{
+		{name: "boot disk too small", err: karpcloudprovider.NewCreateError(fmt.Errorf("size"), instance.BootDiskTooSmallReason, "raise sizeGiB"), wantEvent: true},
+		{name: "other create error", err: karpcloudprovider.NewCreateError(fmt.Errorf("x"), "ResourceNotReady", "not ready")},
+		{name: "plain error", err: fmt.Errorf("boom")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			recorder := &capturingEvents{}
+			provider := New(reproClient{nodeClass: nodeClass}, recorder, reproTypes{variants: []*karpcloudprovider.InstanceType{it}}, failingInstanceProvider{err: tc.err}, nil)
+			_, err := provider.Create(karpopts.ToContext(context.Background(), &karpopts.Options{}), claim)
+			require.Error(t, err)
+			if !tc.wantEvent {
+				require.Empty(t, recorder.published)
+				return
+			}
+			require.Len(t, recorder.published, 1)
+			require.Equal(t, corev1.EventTypeWarning, recorder.published[0].Type)
+			require.Equal(t, "BootDiskTooSmall", recorder.published[0].Reason)
+			require.Same(t, claim, recorder.published[0].InvolvedObject)
 		})
 	}
 }

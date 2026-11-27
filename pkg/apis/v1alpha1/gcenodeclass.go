@@ -277,7 +277,8 @@ type AdditionalNetworkInterface struct {
 // +kubebuilder:validation:XValidation:message="ContainerOptimizedOS version must be 'latest' or 'milestone.build.build.build' (e.g. '125.19216.104.126')",rule="!has(self.version) || !has(self.family) || self.family != 'ContainerOptimizedOS' || self.version == 'latest' || self.version.matches('^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$')"
 // +kubebuilder:validation:XValidation:message="Ubuntu2404 version must be 'latest' or 'vYYYYMMDD' with an optional release letter (e.g. 'v20260416', 'v20251218a')",rule="!has(self.version) || !has(self.family) || self.family != 'Ubuntu2404' || self.version == 'latest' || self.version.matches('^v[0-9]{8}[a-z]?$')"
 // +kubebuilder:validation:XValidation:message="Ubuntu2204 version must be 'latest' or 'vYYYYMMDD' with an optional release letter (e.g. 'v20260416', 'v20251218a')",rule="!has(self.version) || !has(self.family) || self.family != 'Ubuntu2204' || self.version == 'latest' || self.version.matches('^v[0-9]{8}[a-z]?$')"
-// +kubebuilder:validation:XValidation:message="family 'Ubuntu' is not valid; use Ubuntu2404 for Ubuntu 24.04 or Ubuntu2204 for Ubuntu 22.04",rule="!has(self.family) || self.family != 'Ubuntu'"
+// +kubebuilder:validation:XValidation:message="Ubuntu version must be 'latest' or 'vYYYYMMDD' with an optional release letter (e.g. 'v20260416', 'v20251218a')",rule="!has(self.version) || !has(self.family) || self.family != 'Ubuntu' || self.version == 'latest' || self.version.matches('^v[0-9]{8}[a-z]?$')"
+// +kubebuilder:validation:XValidation:message="osVersion is only supported for family Ubuntu",rule="!has(self.osVersion) || (has(self.family) && self.family == 'Ubuntu')"
 type ImageSelectorTerm struct {
 	// Deprecated: use Family with Channel or Version instead.
 	// Alias specifies which GKE image to select.
@@ -295,10 +296,24 @@ type ImageSelectorTerm struct {
 	// +optional
 	ID string `json:"id,omitempty"`
 	// Family specifies the OS image family. Required when using Channel or Version.
-	// Valid values: ContainerOptimizedOS, Ubuntu2404, Ubuntu2204.
-	// +kubebuilder:validation:Enum=ContainerOptimizedOS;Ubuntu2404;Ubuntu2204
+	// Valid values: ContainerOptimizedOS, Ubuntu (with an optional OSVersion), and the deprecated
+	// Ubuntu2404 and Ubuntu2204, which are equivalent to Ubuntu with osVersion 24.04 and 22.04.
+	// +kubebuilder:validation:Enum=ContainerOptimizedOS;Ubuntu;Ubuntu2404;Ubuntu2204
 	// +optional
 	Family string `json:"family,omitempty"`
+	// OSVersion selects the Ubuntu release for family Ubuntu: a release such as "24.04", or
+	// "default" for the release GKE uses by default for the cluster's Kubernetes version. Omitting
+	// it for family Ubuntu means "default". It is not allowed for other families. A fixed release
+	// never changes on its own; "default" follows GKE and can change when the cluster is upgraded
+	// across a version GKE moved its default at, which drifts nodes to the new image. For cluster
+	// versions this Karpenter release has not verified, "default" uses GKE's current documented
+	// default (24.04) and logs a warning. GKE publishes each release only for some Kubernetes
+	// minors; an unavailable release fails image resolution instead of falling back to another
+	// release. Version still pins the image build within the release.
+	// +kubebuilder:validation:Pattern=`^(default|[0-9]{2}\.[0-9]{2})$`
+	// +kubebuilder:validation:MaxLength=7
+	// +optional
+	OSVersion string `json:"osVersion,omitempty"`
 	// Channel specifies the GKE release channel to follow. Only valid when Family is ContainerOptimizedOS.
 	// Use "cluster" to track the channel the cluster is enrolled in.
 	// +kubebuilder:validation:Enum=rapid;regular;stable;extended;cluster
@@ -306,7 +321,7 @@ type ImageSelectorTerm struct {
 	Channel string `json:"channel,omitempty"`
 	// Version pins the image to a specific version or "latest".
 	// For ContainerOptimizedOS: "latest" or "milestone.build.build.build" (e.g. "125.19216.104.126").
-	// For Ubuntu2404/Ubuntu2204: "latest" or "vYYYYMMDD" with an optional release letter (e.g. "v20260416", "v20251218a").
+	// For Ubuntu (and the deprecated Ubuntu2404/Ubuntu2204): "latest" or "vYYYYMMDD" with an optional release letter (e.g. "v20260416", "v20251218a").
 	// +kubebuilder:validation:MaxLength=32
 	// +optional
 	Version string `json:"version,omitempty"`
@@ -696,13 +711,13 @@ func (in *GCENodeClass) ImageFamily() string {
 	if alias := in.Alias(); alias != nil {
 		return alias.Family
 	}
-	// Scan family-based ImageSelectorTerms. Ubuntu2404 and Ubuntu2204 both map to
-	// ImageFamilyUbuntu so downstream code (PatchKubeEnvForOSType) keeps working.
+	// Scan family-based ImageSelectorTerms. Every Ubuntu release maps to ImageFamilyUbuntu so
+	// downstream code (PatchKubeEnvForOSType) keeps working.
 	for _, term := range in.Spec.ImageSelectorTerms {
 		switch term.Family {
 		case ImageFamilyContainerOptimizedOS:
 			return ImageFamilyContainerOptimizedOS
-		case ImageFamilyUbuntu2404, ImageFamilyUbuntu2204:
+		case ImageFamilyUbuntu, ImageFamilyUbuntu2404, ImageFamilyUbuntu2204:
 			return ImageFamilyUbuntu
 		}
 	}

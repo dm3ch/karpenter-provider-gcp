@@ -275,12 +275,14 @@ Karpenter detects arm64 architecture directly from the GCP Compute API. All arm6
 
 Image resolution queries GCP image catalogs directly and does not depend on the bootstrap pool. Bootstrap pool discovery and kube-env patching allow a single source pool (of any architecture) to bootstrap nodes of any OS and architecture combination. See [Bootstrap pool selection](bootstrap-pool.md) for details.
 
-For the `Ubuntu` families, each architecture is resolved independently from the image catalog: Karpenter selects the newest clean `amd64` image and the newest clean `arm64` image separately, and excludes specialized variant builds (e.g. `-tpu`, `-cgroupsv1`, `-linux64k`, `-test`). If no `arm64` image exists for the cluster's Kubernetes minor version, the `GCENodeClass` reports `ImagesReady=False` with reason `ImageResolutionFailed` rather than resolving an `amd64`-only image set — so an arm64 pool never appears ready while it cannot actually provision. If you see this, confirm an `arm64` image is published for your Kubernetes version:
+For `family: Ubuntu`, each architecture is resolved independently from the image catalog: Karpenter selects the newest clean `amd64` image and the newest clean `arm64` image separately, and excludes specialized variant builds (e.g. `-tpu`, `-cgroupsv1`, `-linux64k`, `-64k`, `-hwe`, `-acs`, `-test`). If no `arm64` image exists for the cluster's Kubernetes minor version, the `GCENodeClass` reports `ImagesReady=False` with reason `ImageResolutionFailed` rather than resolving an `amd64`-only image set — so an arm64 pool never appears ready while it cannot actually provision. If you see this, confirm an `arm64` image is published for your Kubernetes version. Use project `ubuntu-os-gke-cloud` for Kubernetes before 1.36 and `gke-ubuntu-node-images` for 1.36 and later, and the release token of your `osVersion` without the dot (`2204`, `2404` or `2604`):
 
 ```sh
-gcloud compute images list --project=ubuntu-os-gke-cloud \
+gcloud compute images list --project=<ubuntu-image-project> \
   --filter="name~'^ubuntu-gke-2404-<major>-<minor>-arm64-v'" --sort-by=~creationTimestamp
 ```
+
+The same `ImageResolutionFailed` for both architectures usually means GKE does not publish that Ubuntu release for the cluster's minor (for example Ubuntu 22.04 after Kubernetes 1.31, or Ubuntu 24.04 on Kubernetes 1.38); switch `osVersion` to a release that does.
 
 To verify arm64 machine types are available in your cluster's region:
 
@@ -383,6 +385,14 @@ If the condition persists, confirm that the boot image status is `READY`:
 ```sh
 gcloud compute images describe <image-name> --project <image-project> --format="value(status)"
 ```
+
+---
+
+## NodeClaim launch fails with `BootDiskTooSmall`
+
+If the `NodeClaim` `Launched` condition reports the reason `BootDiskTooSmall`, and the NodeClaim has a `BootDiskTooSmall` Warning event, GCE rejected the boot disk because it is smaller than the boot image ("Requested disk size cannot be smaller than the image size"). The Ubuntu per-patch image used on GKE 1.36 and later is 12 GiB, so an explicit boot disk of 10 or 11 GiB fails; the COS per-patch images are larger still (15 GiB).
+
+Raise `sizeGiB` of the boot disk (`spec.disks[]` with `boot: true`) in the GCENodeClass to at least the image size. The problem affects every instance type, so Karpenter does not try the next one or mark any offering unavailable, and the launch succeeds after the NodeClass is updated.
 
 ---
 

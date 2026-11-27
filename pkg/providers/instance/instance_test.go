@@ -509,6 +509,56 @@ func TestGetOrCreateInstanceResourceNotReady(t *testing.T) {
 	require.Empty(t, c.Items(), "the offering must not be marked unavailable")
 }
 
+const bootDiskTooSmallMessage = "Invalid value for field 'resource.disks[0].initializeParams.diskSizeGb': '11'. Requested disk size cannot be smaller than the image size (12 GB)"
+
+func TestGetOrCreateInstanceBootDiskTooSmall(t *testing.T) {
+	t.Parallel()
+
+	inserts := 0
+	p := newFakeComputeProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		inserts++
+		w.WriteHeader(http.StatusBadRequest)
+		writeJSON(w, map[string]any{"error": map[string]any{
+			"code":    http.StatusBadRequest,
+			"message": bootDiskTooSmallMessage,
+			"errors":  []map[string]string{{"reason": "invalid", "message": bootDiskTooSmallMessage}},
+		}})
+	}))
+	p.computeDefaultSA = "123-compute@developer.gserviceaccount.com"
+	c := cache.New(unavailableofferings.DefaultTTL, unavailableofferings.CleanupInterval)
+	p.unavailableOfferings = unavailableofferings.NewUnavailableOfferingsWithCache(c)
+
+	_, _, retryable, err := p.getOrCreateInstance(context.Background(), spotOrOnDemandNodeClaim(), imagesReadyNodeClass(), makeNonGPUIT(),
+		makeSourceMetadata("max-pods-per-node=110"),
+		makeCluster("projects/p/global/networks/my-vpc", "regions/us-central1/subnetworks/my-subnet", "pods", false),
+		"us-central1-a", karpv1.CapacityTypeOnDemand, nil, nil, 0, nil)
+
+	require.Error(t, err)
+	require.False(t, retryable, "the same disk is rejected for every instance type and zone")
+	require.False(t, cloudprovider.IsInsufficientCapacityError(err), "a too small disk is not a capacity signal")
+	var createErr *cloudprovider.CreateError
+	require.ErrorAs(t, err, &createErr)
+	require.Equal(t, BootDiskTooSmallReason, createErr.ConditionReason)
+	require.Contains(t, createErr.ConditionMessage, "sizeGiB")
+	require.ErrorContains(t, err, "12 GB", "the GCE error that names the image size is kept")
+	require.Equal(t, 1, inserts)
+	require.Empty(t, c.Items(), "the offering must not be marked unavailable")
+}
+
+func TestIsBootDiskTooSmallError(t *testing.T) {
+	t.Parallel()
+
+	require.True(t, isBootDiskTooSmallError(&googleapi.Error{Code: http.StatusBadRequest, Message: bootDiskTooSmallMessage}))
+	require.True(t, isBootDiskTooSmallError(fmt.Errorf("wrapped: %w", &googleapi.Error{Message: bootDiskTooSmallMessage})))
+	require.False(t, isBootDiskTooSmallError(&googleapi.Error{Message: "Invalid value for field 'resource.disks[1].initializeParams.diskSizeGb': '1'. Disk size must be at least 10 GB"}))
+	require.False(t, isBootDiskTooSmallError(&googleapi.Error{Errors: []googleapi.ErrorItem{{Reason: "resourceNotReady"}}}))
+	require.False(t, isBootDiskTooSmallError(fmt.Errorf("not a googleapi error")))
+}
+
 func TestIsResourceNotReadyError(t *testing.T) {
 	t.Parallel()
 

@@ -24,6 +24,7 @@ import (
 	"math/rand/v2"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -312,6 +313,17 @@ func (e *Environment) CreateNodeClassWithFamilyChannel(ctx context.Context, name
 // CreateNodeClassWithFamilyVersion creates a GCENodeClass using the new
 // family+version image selector (e.g. family=ContainerOptimizedOS, version=latest).
 func (e *Environment) CreateNodeClassWithFamilyVersion(ctx context.Context, name, family, version string) {
+	e.createNodeClassWithImageTerm(ctx, name, family, map[string]any{"family": family, "version": version})
+}
+
+// CreateNodeClassWithUbuntuOSVersion creates a GCENodeClass selecting Ubuntu by
+// release, using family Ubuntu with osVersion (e.g. "24.04") and version.
+func (e *Environment) CreateNodeClassWithUbuntuOSVersion(ctx context.Context, name, osVersion, version string) {
+	e.createNodeClassWithImageTerm(ctx, name, "Ubuntu",
+		map[string]any{"family": "Ubuntu", "osVersion": osVersion, "version": version})
+}
+
+func (e *Environment) createNodeClassWithImageTerm(ctx context.Context, name, family string, term map[string]any) {
 	diskGiB := int64(DefaultE2EDiskGiB)
 	if strings.HasPrefix(family, "Ubuntu") {
 		diskGiB = 50
@@ -322,9 +334,7 @@ func (e *Environment) CreateNodeClassWithFamilyVersion(ctx context.Context, name
 		"kind":       "GCENodeClass",
 		"metadata":   map[string]any{"name": name, "labels": map[string]any{e2eOwnerLabel: "true"}},
 		"spec": map[string]any{
-			"imageSelectorTerms": []any{
-				map[string]any{"family": family, "version": version},
-			},
+			"imageSelectorTerms": []any{term},
 			"disks": []any{
 				map[string]any{"sizeGiB": diskGiB, "boot": true},
 			},
@@ -1682,10 +1692,28 @@ func (e *Environment) ResolveCurrentCOSImage(ctx context.Context) string {
 	return fmt.Sprintf("projects/gke-node-images/global/images/%s", best.Name)
 }
 
-// ResolveCurrentUbuntuVersion queries the ubuntu-os-gke-cloud project for the
-// most recent non-deprecated amd64 Ubuntu 24.04 GKE image matching the cluster's
-// K8s minor version and returns the version token (e.g. "v20260416").
+// ubuntuImageProjectForMinor returns the project GKE serves Ubuntu node images from: images for
+// GKE 1.36 and later are published in gke-ubuntu-node-images, earlier ones in ubuntu-os-gke-cloud.
+func ubuntuImageProjectForMinor(minor int) string {
+	if minor >= 36 {
+		return "gke-ubuntu-node-images"
+	}
+	return "ubuntu-os-gke-cloud"
+}
+
+// ResolveCurrentUbuntuVersion returns the version token (e.g. "v20260416") of the newest clean
+// amd64 Ubuntu 24.04 GKE image for the cluster's K8s minor. It fails the test if there is none.
 func (e *Environment) ResolveCurrentUbuntuVersion(ctx context.Context) string {
+	version := e.ResolveUbuntuVersion(ctx, "2404")
+	Expect(version).NotTo(BeEmpty(), "no Ubuntu 24.04 image found for the cluster's K8s minor")
+	return version
+}
+
+// ResolveUbuntuVersion queries the Ubuntu image project that serves the cluster's K8s minor for the
+// most recent non-deprecated clean amd64 GKE image of the given release token ("2204", "2404",
+// "2604") for that minor and returns its version token (e.g. "v20260416"). It returns "" when GKE
+// publishes no such image for the minor, so callers can skip releases the cluster cannot run.
+func (e *Environment) ResolveUbuntuVersion(ctx context.Context, release string) string {
 	serverVer, err := e.KubeClient.Discovery().ServerVersion()
 	Expect(err).NotTo(HaveOccurred(), "getting server version")
 
@@ -1695,28 +1723,84 @@ func (e *Environment) ResolveCurrentUbuntuVersion(ctx context.Context) string {
 	parts := strings.Split(raw, ".")
 	Expect(len(parts)).To(BeNumerically(">=", 2),
 		"unexpected server version format: %s", serverVer.GitVersion)
+	minor, err := strconv.Atoi(parts[1])
+	Expect(err).NotTo(HaveOccurred(), "parsing minor of server version %s", serverVer.GitVersion)
 
-	prefix := fmt.Sprintf("ubuntu-gke-2404-%s-%s", parts[0], parts[1])
-	best, listErr := newestImage(ctx, e.computeSvc, "ubuntu-os-gke-cloud", func(img *compute.Image) bool {
-		if !strings.HasPrefix(img.Name, prefix) || !strings.Contains(img.Name, "-amd64-") {
-			return false
-		}
-		for _, substr := range []string{"cgroupsv1", "linux64k", "-tpu-", "-test"} {
-			if strings.Contains(img.Name, substr) {
-				return false
-			}
-		}
-		return true
+	project := ubuntuImageProjectForMinor(minor)
+	// Clean builds only: variants (-tpu, -cgroupsv1, -linux64k, ...) are suffixes after the date.
+	// Ubuntu 22.04 amd64 names carry no architecture token.
+	clean := regexp.MustCompile(fmt.Sprintf(`^ubuntu-gke-%s-%s-%s-(?:amd64-)?v\d{8}[a-z]?$`, release, parts[0], parts[1]))
+	best, listErr := newestImage(ctx, e.computeSvc, project, func(img *compute.Image) bool {
+		return clean.MatchString(img.Name)
 	})
-	Expect(listErr).NotTo(HaveOccurred(), "listing Ubuntu images in ubuntu-os-gke-cloud")
-	Expect(best).NotTo(BeNil(), "no Ubuntu image found for K8s version %s", serverVer.GitVersion)
+	Expect(listErr).NotTo(HaveOccurred(), "listing Ubuntu images in %s", project)
+	if best == nil {
+		return ""
+	}
 
 	versionRe := regexp.MustCompile(`-v(\d{8}[a-z]?)`)
 	m := versionRe.FindStringSubmatch(best.Name)
 	Expect(m).To(HaveLen(2), "could not extract Ubuntu version from %q", best.Name)
-	version := "v" + m[1]
-	Expect(version).NotTo(BeEmpty(), "could not extract Ubuntu version from %q", best.Name)
-	return version
+	return "v" + m[1]
+}
+
+// ExpectedUbuntuDefaultRelease returns the release token ("2204" or "2404") GKE's documented rule
+// gives for the cluster's Kubernetes version, which `osVersion: default` and an omitted osVersion
+// must follow: Ubuntu 22.04 before 1.32.1, Ubuntu 24.04 from 1.32.1 (documented through 1.37; later
+// versions use the documented current default, 24.04).
+func (e *Environment) ExpectedUbuntuDefaultRelease(ctx context.Context) string {
+	serverVer, err := e.KubeClient.Discovery().ServerVersion()
+	Expect(err).NotTo(HaveOccurred(), "getting server version")
+	m := regexp.MustCompile(`^v?(\d+)\.(\d+)\.(\d+)`).FindStringSubmatch(serverVer.GitVersion)
+	Expect(m).To(HaveLen(4), "unexpected server version format: %s", serverVer.GitVersion)
+	minor, _ := strconv.Atoi(m[2])
+	patch, _ := strconv.Atoi(m[3])
+	if minor < 32 || (minor == 32 && patch < 1) {
+		return "2204"
+	}
+	return "2404"
+}
+
+// ResolveUbuntuPerPatchImage independently looks up the per-patch image (gke-<version>-gke<build>-
+// ubuntu-<release>-<minor>-amd64-vDATE-c-pre) that GKE publishes for the cluster master's exact
+// version and the given release token ("2404", "2604"), and returns its name, or "" when there is
+// none (the legacy Ubuntu project, GKE before 1.36, or no published image). When GKE published
+// several base builds the newest date wins. The whole project is scanned, so it does not share the
+// controller's page bound.
+func (e *Environment) ResolveUbuntuPerPatchImage(ctx context.Context, release string) string {
+	serverVer, err := e.KubeClient.Discovery().ServerVersion()
+	Expect(err).NotTo(HaveOccurred(), "getting server version")
+	m := regexp.MustCompile(`^v(\d+)\.(\d+)\.(\d+)-gke\.(\d+)`).FindStringSubmatch(serverVer.GitVersion)
+	if m == nil {
+		return ""
+	}
+	minor, err := strconv.Atoi(m[2])
+	Expect(err).NotTo(HaveOccurred(), "parsing minor of server version %s", serverVer.GitVersion)
+	project := ubuntuImageProjectForMinor(minor)
+	if project != "gke-ubuntu-node-images" {
+		return ""
+	}
+	name := regexp.MustCompile(fmt.Sprintf(`^gke-%s%s%s-gke%s-ubuntu-%s-\d+-\d+-amd64-(v\d{8}[a-z]?)-c-pre$`, m[1], m[2], m[3], m[4], release))
+	best, bestDate := "", ""
+	pageToken := ""
+	for {
+		call := e.computeSvc.Images.List(project).OrderBy("creationTimestamp desc").
+			Fields(googleapi.Field("nextPageToken,items(name,creationTimestamp,status,deprecated/state)"))
+		if pageToken != "" {
+			call.PageToken(pageToken)
+		}
+		page, err := call.Context(ctx).Do()
+		Expect(err).NotTo(HaveOccurred(), "listing Ubuntu images in %s", project)
+		for _, img := range page.Items {
+			if sub := name.FindStringSubmatch(img.Name); sub != nil && usableImage(img) && sub[1] > bestDate {
+				best, bestDate = img.Name, sub[1]
+			}
+		}
+		if page.NextPageToken == "" {
+			return best
+		}
+		pageToken = page.NextPageToken
+	}
 }
 
 // GetChannelVersion fetches the GKE server config and returns the version string

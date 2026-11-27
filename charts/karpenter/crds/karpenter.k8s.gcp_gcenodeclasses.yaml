@@ -303,9 +303,11 @@ spec:
                     family:
                       description: |-
                         Family specifies the OS image family. Required when using Channel or Version.
-                        Valid values: ContainerOptimizedOS, Ubuntu2404, Ubuntu2204.
+                        Valid values: ContainerOptimizedOS, Ubuntu (with an optional OSVersion), and the deprecated
+                        Ubuntu2404 and Ubuntu2204, which are equivalent to Ubuntu with osVersion 24.04 and 22.04.
                       enum:
                       - ContainerOptimizedOS
+                      - Ubuntu
                       - Ubuntu2404
                       - Ubuntu2204
                       type: string
@@ -317,11 +319,25 @@ spec:
                       - message: '''id'' is improperly formatted, must match the format
                           ''id'''
                         rule: self.matches('^.*$')
+                    osVersion:
+                      description: |-
+                        OSVersion selects the Ubuntu release for family Ubuntu: a release such as "24.04", or
+                        "default" for the release GKE uses by default for the cluster's Kubernetes version. Omitting
+                        it for family Ubuntu means "default". It is not allowed for other families. A fixed release
+                        never changes on its own; "default" follows GKE and can change when the cluster is upgraded
+                        across a version GKE moved its default at, which drifts nodes to the new image. For cluster
+                        versions this Karpenter release has not verified, "default" uses GKE's current documented
+                        default (24.04) and logs a warning. GKE publishes each release only for some Kubernetes
+                        minors; an unavailable release fails image resolution instead of falling back to another
+                        release. Version still pins the image build within the release.
+                      maxLength: 7
+                      pattern: ^(default|[0-9]{2}\.[0-9]{2})$
+                      type: string
                     version:
                       description: |-
                         Version pins the image to a specific version or "latest".
                         For ContainerOptimizedOS: "latest" or "milestone.build.build.build" (e.g. "125.19216.104.126").
-                        For Ubuntu2404/Ubuntu2204: "latest" or "vYYYYMMDD" with an optional release letter (e.g. "v20260416", "v20251218a").
+                        For Ubuntu (and the deprecated Ubuntu2404/Ubuntu2204): "latest" or "vYYYYMMDD" with an optional release letter (e.g. "v20260416", "v20251218a").
                       maxLength: 32
                       type: string
                   type: object
@@ -350,9 +366,13 @@ spec:
                       an optional release letter (e.g. 'v20260416', 'v20251218a')
                     rule: '!has(self.version) || !has(self.family) || self.family
                       != ''Ubuntu2204'' || self.version == ''latest'' || self.version.matches(''^v[0-9]{8}[a-z]?$'')'
-                  - message: family 'Ubuntu' is not valid; use Ubuntu2404 for Ubuntu
-                      24.04 or Ubuntu2204 for Ubuntu 22.04
-                    rule: '!has(self.family) || self.family != ''Ubuntu'''
+                  - message: Ubuntu version must be 'latest' or 'vYYYYMMDD' with an
+                      optional release letter (e.g. 'v20260416', 'v20251218a')
+                    rule: '!has(self.version) || !has(self.family) || self.family
+                      != ''Ubuntu'' || self.version == ''latest'' || self.version.matches(''^v[0-9]{8}[a-z]?$'')'
+                  - message: osVersion is only supported for family Ubuntu
+                    rule: '!has(self.osVersion) || (has(self.family) && self.family
+                      == ''Ubuntu'')'
                 maxItems: 30
                 minItems: 1
                 type: array

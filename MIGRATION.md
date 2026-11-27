@@ -28,6 +28,31 @@ Existing nodes are not upgraded in place, and a release-only status change with 
 
 `spec.kubeletConfiguration.maxPods` now accepts at most 512, GKE Standard's limit, and values from 257 to 512 get a `/22` Pod alias range per node instead of `/23`. Upgrade CRDs before the controller. A NodeClass with a larger value is rejected on its next update; lower it first. No other action is required: values up to 256 keep their ranges. A `/22` per node needs a Pod secondary range with room for it. See [Pod density](docs/examples/advanced.md#pod-density).
 
+### Ubuntu images follow the GKE 1.36 image project; `family: Ubuntu` takes `osVersion`
+
+On GKE 1.36 and later, Ubuntu images come from `gke-ubuntu-node-images` instead of `ubuntu-os-gke-cloud`; earlier minors are unchanged. Allow the new project in the controller's trusted-image-project policy and any VPC Service Controls perimeter. The move replaces no existing node: GKE uses the same image names in both projects.
+
+**Upgrade CRDs before the controller.** `imageSelectorTerms[].osVersion` selects the Ubuntu release for `family: Ubuntu` (`"22.04"`, `"24.04"`, `"26.04"`, or `default`, GKE's release for the cluster version; omitted means `default`) and is rejected for other families. `default` can change the release, and drift nodes, when a cluster upgrade crosses a version where GKE moves its default (1.32.1: 22.04 to 24.04).
+
+**Deprecation:** the families `Ubuntu2404` and `Ubuntu2204` are deprecated and will be removed in a future release, announced here first. They resolve exactly like `Ubuntu` with `osVersion: "24.04"`/`"22.04"`, so switching drifts no node; please switch now. Ubuntu 26.04 is available only through `family: Ubuntu`.
+
+```yaml
+# Before
+imageSelectorTerms:
+  - family: Ubuntu2404
+    version: latest
+
+# After
+imageSelectorTerms:
+  - family: Ubuntu
+    osVersion: "24.04"
+    version: latest
+```
+
+**Faster startup on 1.36+.** Karpenter prefers the per-patch image GKE boots its own Ubuntu pools with (components preloaded): nodes were Ready in about 80 seconds instead of 204. Its base build can be older than the newest plain build, so the first reconciliation can replace `latest` Ubuntu nodes once; use NodePool disruption budgets or pin `version: vYYYYMMDD`. The per-patch image is 12 GiB and GCE rejects a smaller boot disk, so raise an explicit Ubuntu boot disk of 10 or 11 GiB (`spec.disks[].sizeGiB`) to at least 12 before upgrading a cluster to 1.36+. See [Ubuntu per-patch images](docs/image-selection.md#ubuntu-per-patch-images).
+
+GKE publishes each Ubuntu release only for some minors, and Karpenter never substitutes another (November 2026: 22.04 through 1.31, 24.04 for 1.31–1.37, 26.04 for 1.37 and 1.38 alpha). A NodeClass whose release has no image for the cluster's minor reports `ImagesReady=False` / `ImageResolutionFailed`; change `osVersion` (nodes then drift) before upgrading the cluster. See [OS families](docs/image-selection.md#os-families).
+
 ### Release distribution moves to GHCR OCI
 
 Controller images use `ghcr.io/karpenter-gcp/karpenter-provider-gcp:vX.Y.Z`. Helm charts use `oci://ghcr.io/karpenter-gcp/karpenter-provider-gcp/charts/karpenter` and `/karpenter-crd` with version `X.Y.Z`. Use Helm 3.8+ or Helm 4; replace indexed chart references in Helm automation and allow GHCR image pulls in registry policies. Keep existing release names, namespaces and configured values; upgrade CRDs before the controller. A pinned `controller.image.repository` still overrides the new default and must be updated explicitly.
