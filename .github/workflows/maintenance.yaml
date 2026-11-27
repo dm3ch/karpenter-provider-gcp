@@ -59,14 +59,14 @@ jobs:
 
       - name: Create PR if pricing changed
         if: github.event_name == 'schedule' || !inputs.dry_run
-        uses: peter-evans/create-pull-request@v8.1.3
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          draft: true
-          add-paths: pkg/providers/pricing/initial-prices.json
-          commit-message: "chore(pricing): update initial-prices.json"
-          title: "chore(pricing): scheduled pricing data refresh"
-          body: |
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          PR_BRANCH: automated/update-pricing
+          PR_BASE: ${{ github.ref_name }}
+          PR_LABELS: pricing,automated,kind/cleanup
+          PR_TITLE: "chore(pricing): scheduled pricing data refresh"
+          PR_BODY: |
             #### What type of PR is this?
             Cleanup
 
@@ -85,11 +85,39 @@ jobs:
 
             #### Special notes for your reviewer:
             Automated pricing refresh; review the generated data before merging. A maintainer must approve through GitHub Review because the automation App cannot approve its own PR.
-          branch: automated/update-pricing
-          signoff: true
-          sign-commits: true
-          delete-branch: true
-          labels: pricing,automated,kind/cleanup
+        run: |
+          paths=(pkg/providers/pricing/initial-prices.json)
+          if [[ -z "$(git status --porcelain -- "${paths[@]}")" ]]; then
+            echo "No changes to publish."
+            if git ls-remote --exit-code --heads origin "$PR_BRANCH" >/dev/null; then
+              # Deleting the branch closes its pull request.
+              git push origin --delete "$PR_BRANCH"
+            fi
+            exit 0
+          fi
+
+          app_id="$(gh api "users/${PR_APP_SLUG}[bot]" --jq .id)"
+          git config user.name "${PR_APP_SLUG}[bot]"
+          git config user.email "${app_id}+${PR_APP_SLUG}[bot]@users.noreply.github.com"
+          gh auth setup-git
+          git switch -C "$PR_BRANCH"
+          git add -- "${paths[@]}"
+          git commit --signoff --message "$PR_TITLE"
+
+          # Rewriting an identical branch would dismiss approvals and rerun checks.
+          if git fetch --depth=1 origin "$PR_BRANCH" 2>/dev/null && git diff --quiet FETCH_HEAD HEAD; then
+            echo "Branch $PR_BRANCH already holds this change."
+          else
+            git push --force origin "$PR_BRANCH"
+          fi
+
+          number="$(gh pr list --head "$PR_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$number" ]]; then
+            gh pr edit "$number" --title "$PR_TITLE" --body "$PR_BODY" --add-label "$PR_LABELS"
+          else
+            gh pr create --draft --base "$PR_BASE" --head "$PR_BRANCH" \
+              --title "$PR_TITLE" --body "$PR_BODY" --label "$PR_LABELS"
+          fi
 
   security-pins:
     name: Security pins (Go, base image)
@@ -130,25 +158,14 @@ jobs:
 
       - name: Open draft update PR
         if: github.event_name == 'schedule' || !inputs.dry_run
-        uses: peter-evans/create-pull-request@v8.1.3
-        with:
-          token: ${{ steps.app-token.outputs.token }}
-          branch: automated/security-pins
-          base: main
-          draft: true
-          signoff: true
-          sign-commits: true
-          labels: automated,kind/cleanup
-          author: github-actions[bot] <41898282+github-actions[bot]@users.noreply.github.com>
-          commit-message: 'chore(security): refresh Go patch and controller base'
-          title: 'chore(security): refresh Go patch and controller base'
-          add-paths: |
-            go.mod
-            hack/tools/go.mod
-            hack/crd-tools/go.mod
-            hack/pdcsi-data/go.mod
-            .ko.yaml
-          body: |
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PR_APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          PR_BRANCH: automated/security-pins
+          PR_BASE: main
+          PR_LABELS: automated,kind/cleanup
+          PR_TITLE: 'chore(security): refresh Go patch and controller base'
+          PR_BODY: |
             #### What type of PR is this?
             Cleanup
 
@@ -167,3 +184,32 @@ jobs:
 
             #### Special notes for your reviewer:
             Published by the automation App so pull-request checks can run. A maintainer must approve this PR through GitHub Review because the App cannot approve its own PR. Rebuilding is required to deliver fixes in published images.
+        run: |
+          paths=(go.mod hack/tools/go.mod hack/crd-tools/go.mod hack/pdcsi-data/go.mod .ko.yaml)
+          if [[ -z "$(git status --porcelain -- "${paths[@]}")" ]]; then
+            echo "No changes to publish."
+            exit 0
+          fi
+
+          app_id="$(gh api "users/${PR_APP_SLUG}[bot]" --jq .id)"
+          git config user.name "${PR_APP_SLUG}[bot]"
+          git config user.email "${app_id}+${PR_APP_SLUG}[bot]@users.noreply.github.com"
+          gh auth setup-git
+          git switch -C "$PR_BRANCH"
+          git add -- "${paths[@]}"
+          git commit --signoff --message "$PR_TITLE"
+
+          # Rewriting an identical branch would dismiss approvals and rerun checks.
+          if git fetch --depth=1 origin "$PR_BRANCH" 2>/dev/null && git diff --quiet FETCH_HEAD HEAD; then
+            echo "Branch $PR_BRANCH already holds this change."
+          else
+            git push --force origin "$PR_BRANCH"
+          fi
+
+          number="$(gh pr list --head "$PR_BRANCH" --state open --json number --jq '.[0].number // empty')"
+          if [[ -n "$number" ]]; then
+            gh pr edit "$number" --title "$PR_TITLE" --body "$PR_BODY" --add-label "$PR_LABELS"
+          else
+            gh pr create --draft --base "$PR_BASE" --head "$PR_BRANCH" \
+              --title "$PR_TITLE" --body "$PR_BODY" --label "$PR_LABELS"
+          fi
