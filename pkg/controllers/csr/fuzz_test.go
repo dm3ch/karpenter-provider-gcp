@@ -39,8 +39,8 @@ import (
 )
 
 // FuzzParseKubeletClientRequest checks that an arbitrary request field never
-// panics and that an accepted request names a node and one of the allowed
-// organizations.
+// panics and that an accepted request is a kubelet client CSR for a named node
+// without subject alternative names.
 func FuzzParseKubeletClientRequest(f *testing.F) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	require.NoError(f, err)
@@ -62,11 +62,17 @@ func FuzzParseKubeletClientRequest(f *testing.F) {
 	f.Add(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE REQUEST", Bytes: []byte("not DER")}))
 	f.Add(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}))
 	f.Fuzz(func(t *testing.T, request []byte) {
-		subject, err := parseKubeletClientRequest(request)
+		subject, csr, err := parseKubeletClientRequest(request)
 		if err != nil {
+			require.Nil(t, csr)
 			require.Equal(t, kubeletClientSubject{}, subject, "a rejected request must not yield a subject")
 			return
 		}
+		require.NotNil(t, csr)
 		require.NotEmpty(t, subject.nodeName)
+		require.Empty(t, csr.DNSNames)
+		require.Empty(t, csr.IPAddresses)
+		require.Empty(t, csr.EmailAddresses)
+		require.Empty(t, csr.URIs)
 	})
 }

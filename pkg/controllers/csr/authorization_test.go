@@ -18,233 +18,175 @@ package csr
 
 import (
 	"context"
-	"crypto/x509"
-	"crypto/x509/pkix"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	authorizationv1 "k8s.io/api/authorization/v1"
 	certv1 "k8s.io/api/certificates/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	karpv1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 
 	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/apis/v1alpha1"
+	"github.com/karpenter-gcp/karpenter-provider-gcp/pkg/providers/instance"
 )
 
-func TestValidateNodeClaimAuthorization(t *testing.T) {
-	const nodeName = "karpenter-target"
+func TestReconcileDoesNotReapproveDecidedRequests(t *testing.T) {
 	for _, tt := range []struct {
 		name    string
-		renewal bool
-		mutate  func(*karpv1.NodeClaim)
-		approve bool
+		decided func(*certv1.CertificateSigningRequest)
 	}{
 		{
-			name:   "bootstrap requires a launched claim",
-			mutate: func(nc *karpv1.NodeClaim) { nc.Status.Conditions = nil },
-		},
-		{
-			name: "bootstrap rejects a deleting claim",
-			mutate: func(nc *karpv1.NodeClaim) {
-				now := metav1.Now()
-				nc.DeletionTimestamp = &now
+			name: "approved",
+			decided: func(request *certv1.CertificateSigningRequest) {
+				request.Status.Conditions = []certv1.CertificateSigningRequestCondition{{Type: certv1.CertificateApproved, Status: "True", Reason: "ExistingDecision"}}
 			},
 		},
 		{
-			name:   "bootstrap rejects another provider",
-			mutate: func(nc *karpv1.NodeClaim) { nc.Spec.NodeClassRef.Group = "another.provider.example" },
-		},
-		{
-			name:   "bootstrap rejects another node class kind",
-			mutate: func(nc *karpv1.NodeClaim) { nc.Spec.NodeClassRef.Kind = "OtherNodeClass" },
-		},
-		{
-			name:   "bootstrap requires a node class reference",
-			mutate: func(nc *karpv1.NodeClaim) { nc.Spec.NodeClassRef = nil },
-		},
-		{
-			name:   "bootstrap rejects an incomplete GCE identity",
-			mutate: func(nc *karpv1.NodeClaim) { nc.Status.ProviderID = "gce:///us-central1-a/" + nodeName },
-		},
-		{
-			name:    "renewal requires completed registration",
-			renewal: true,
-			mutate:  func(nc *karpv1.NodeClaim) { nc.Status.Conditions = nil },
-		},
-		{
-			name:    "renewal rejects another provider",
-			renewal: true,
-			mutate:  func(nc *karpv1.NodeClaim) { nc.Spec.NodeClassRef.Group = "another.provider.example" },
-		},
-		{
-			name:    "renewal requires the same GCE instance name",
-			renewal: true,
-			mutate:  func(nc *karpv1.NodeClaim) { nc.Status.ProviderID = "gce://my-project/us-central1-a/another-node" },
-		},
-		{
-			name:    "registered renewal does not depend on launch condition",
-			renewal: true,
-			mutate: func(nc *karpv1.NodeClaim) {
-				nc.Status.Conditions = nil
-				nc.StatusConditions().SetTrue(karpv1.ConditionTypeRegistered)
-			},
-			approve: true,
-		},
-		{
-			name:    "registered nodes can renew while draining",
-			renewal: true,
-			mutate: func(nc *karpv1.NodeClaim) {
-				now := metav1.Now()
-				nc.DeletionTimestamp = &now
-			},
-			approve: true,
-		},
-	} {
-		usernames := []string{"kubelet-nodepool-bootstrap", "kubelet-bootstrap"}
-		if tt.renewal {
-			usernames = []string{"system:node:" + nodeName}
-		}
-		for _, username := range usernames {
-			t.Run(tt.name+"/"+username, func(t *testing.T) {
-				nc := launchedNodeClaim("target", nodeName)
-				request := bootstrapCSR(nodeRequest(t, nodeName))
-				if tt.renewal {
-					nc = registeredNodeClaim("target", nodeName)
-					request = nodeCSR(nodeRequest(t, nodeName), nodeName)
-				}
-				request.Spec.Username = username
-				tt.mutate(&nc)
-				err := validateKubeletClientCSR(request, []karpv1.NodeClaim{nc})
-				if tt.approve {
-					require.NoError(t, err)
-				} else {
-					require.Error(t, err)
-				}
-			})
-		}
-	}
-}
-
-func TestReconcileCSRApproval(t *testing.T) {
-	const nodeName = "karpenter-target"
-	for _, tt := range []struct {
-		name    string
-		csr     func(*testing.T) *certv1.CertificateSigningRequest
-		approve bool
-	}{
-		{
-			name: "valid bootstrap",
-			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
-				return bootstrapCSR(nodeRequest(t, "karpenter-pending"))
-			},
-			approve: true,
-		},
-		{
-			name: "GKE TPM bootstrap requester with only the authenticated group",
-			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
-				return kubeletCSR(requestPEM(t, &x509.CertificateRequest{
-					Subject: pkix.Name{CommonName: "system:node:karpenter-pending", Organization: []string{"system:nodes"}},
-				}), "kubelet-bootstrap", "system:authenticated")
-			},
-			approve: true,
-		},
-		{
-			name: "GKE TPM bootstrap requester cannot claim a registered node",
-			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
-				return kubeletCSR(nodeRequest(t, nodeName), "kubelet-bootstrap", nodePoolOrg, "system:authenticated")
+			name: "denied",
+			decided: func(request *certv1.CertificateSigningRequest) {
+				request.Status.Conditions = []certv1.CertificateSigningRequestCondition{{Type: certv1.CertificateDenied, Status: "True", Reason: "ExistingDecision"}}
 			},
 		},
 		{
-			name: "valid self renewal",
-			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
-				return nodeCSR(nodeRequest(t, nodeName), nodeName)
-			},
-			approve: true,
-		},
-		{
-			name: "service account cannot claim a managed node",
-			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
-				return kubeletCSR(nodeRequest(t, nodeName), "system:serviceaccount:default:csr-creator", nodePoolOrg)
-			},
-		},
-		{
-			name: "node cannot claim another managed node",
-			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
-				return nodeCSR(nodeRequest(t, nodeName), "another-node")
-			},
-		},
-		{
-			name: "node shaped username without authenticated node group",
-			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
-				return kubeletCSR(nodeRequest(t, nodeName), "system:node:"+nodeName, nodePoolOrg, instanceOrg, "system:authenticated")
+			// A request that already holds a certificate must never be approved again,
+			// even when no terminal condition was recorded.
+			name: "already issued",
+			decided: func(request *certv1.CertificateSigningRequest) {
+				request.Status.Certificate = []byte("issued-certificate")
 			},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx := context.Background()
-			request := tt.csr(t)
-			pending := launchedNodeClaim("pending", "karpenter-pending")
-			registered := registeredNodeClaim("target", nodeName)
-			api, approvals := approvalClient(t)
-			controller := NewController(api)
-			controller.client = &csrReadClient{request: request, claims: []karpv1.NodeClaim{pending, registered}}
-
-			_, err := controller.Reconcile(ctx)
-			require.NoError(t, err)
-			if tt.approve {
-				require.Len(t, approvals, 1)
-				got := <-approvals
-				require.Len(t, got.Status.Conditions, 1)
-				require.Equal(t, certv1.CertificateApproved, got.Status.Conditions[0].Type)
-				require.Equal(t, "True", string(got.Status.Conditions[0].Status))
-				require.Equal(t, "KarpenterAutoApprover", got.Status.Conditions[0].Reason)
-			} else {
-				require.Empty(t, approvals)
-			}
-		})
-	}
-}
-
-func TestReconcileDoesNotReapproveDecidedRequests(t *testing.T) {
-	for _, condition := range []certv1.RequestConditionType{certv1.CertificateApproved, certv1.CertificateDenied} {
-		t.Run(string(condition), func(t *testing.T) {
-			request := bootstrapCSR(nodeRequest(t, "karpenter-pending"))
-			request.Status.Conditions = []certv1.CertificateSigningRequestCondition{{Type: condition, Status: "True", Reason: "ExistingDecision"}}
-			pending := launchedNodeClaim("pending", "karpenter-pending")
-			api, approvals := approvalClient(t)
-			controller := NewController(api)
-			controller.client = &csrReadClient{request: request, claims: []karpv1.NodeClaim{pending}}
+			request := bootstrapCSR(nodeRequest(t, attestationVM.Name))
+			tt.decided(request)
+			api, double := newKubeAPIDouble(t)
+			double.sarAllowed = true
+			controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
+				return liveIncarnation(), nil
+			}))
+			controller.client = &csrReadClient{request: request, claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
 
 			_, err := controller.Reconcile(context.Background())
 			require.NoError(t, err)
-			require.Empty(t, approvals)
+			require.Empty(t, double.recordedApprovals())
+			require.Empty(t, double.recordedReviews(), "a decided request must not even be authorized")
 		})
 	}
 }
 
 func TestReconcileFailsClosedWhenClaimsCannotBeRead(t *testing.T) {
-	request := bootstrapCSR(nodeRequest(t, "karpenter-pending"))
-	api, approvals := approvalClient(t)
+	api, double := newKubeAPIDouble(t)
 	readErr := errors.New("nodeclaim read unavailable")
-	controller := NewController(api)
-	controller.client = &csrReadClient{request: request, claimError: readErr}
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
+		return liveIncarnation(), nil
+	}))
+	controller.client = &csrReadClient{request: bootstrapCSR(nodeRequest(t, attestationVM.Name)), claimError: readErr}
 
 	_, err := controller.Reconcile(context.Background())
 	require.ErrorIs(t, err, readErr)
-	require.Empty(t, approvals)
+	require.Empty(t, double.recordedApprovals())
+}
+
+func TestReconcileContinuesAfterTemporaryIdentityFailure(t *testing.T) {
+	failing := legacyCSR(legacyRequestPEM(t, nil))
+	failing.Name = "csr-failing"
+	nodeName := "karpenter-other"
+	other := registeredNodeClaim("other", nodeName, 42)
+	selfRenewal := nodeCSR(nodeRequest(t, nodeName), nodeName)
+	selfRenewal.Name = "csr-renewal"
+
+	api, double := newKubeAPIDouble(t)
+	double.sarAllowed = true
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
+		return nil, errors.New("compute unavailable")
+	}))
+	controller.client = &csrReadClient{requests: []*certv1.CertificateSigningRequest{failing, selfRenewal}, claims: []karpv1.NodeClaim{launchedLegacyClaim(), other}}
+
+	_, err := controller.Reconcile(context.Background())
+	require.Error(t, err, "the temporary identity failure is reported for retry")
+
+	approvals := double.recordedApprovals()
+	require.Len(t, approvals, 1, "the unrelated request must still be approved")
+	require.Equal(t, "csr-renewal", approvals[0].Name)
+}
+
+func TestReconcileSkipsUnrelatedBatchBeforeReadingClaims(t *testing.T) {
+	decided := kubeletCSR([]byte("unused"), bootstrapUser)
+	decided.Status.Certificate = []byte("already issued")
+	otherSigner := kubeletCSR([]byte("unused"), bootstrapUser)
+	otherSigner.Spec.SignerName = certv1.KubeletServingSignerName
+	unknownUser := kubeletCSR([]byte("unused"), "unrelated-requester")
+	api, double := newKubeAPIDouble(t)
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
+		t.Fatal("irrelevant requests must not read VM identity")
+		return nil, nil
+	}))
+	controller.client = &csrReadClient{
+		requests:   []*certv1.CertificateSigningRequest{decided, otherSigner, unknownUser},
+		claimError: errors.New("NodeClaims must not be read for this batch"),
+	}
+	_, err := controller.Reconcile(context.Background())
+	require.NoError(t, err)
+	require.Empty(t, double.recordedReviews())
+	require.Empty(t, double.recordedApprovals())
+}
+
+func TestReconcileBoundsEachRequestIndependently(t *testing.T) {
+	first := legacyCSR(legacyRequestPEM(t, nil))
+	second := first.DeepCopy()
+	second.Name = "csr-next"
+	api, double := newKubeAPIDouble(t)
+	double.sarAllowed = true
+	var firstContext context.Context
+	provider := identityProviderFunc(func(ctx context.Context, _, _ string) (*instance.InstanceIncarnation, error) {
+		deadline, ok := ctx.Deadline()
+		require.True(t, ok, "each authorization attempt needs an end-to-end deadline")
+		require.LessOrEqual(t, time.Until(deadline), 30*time.Second)
+		require.NoError(t, ctx.Err())
+		if firstContext == nil {
+			firstContext = ctx
+			return nil, context.DeadlineExceeded
+		}
+		require.ErrorIs(t, firstContext.Err(), context.Canceled, "release the first request's scope before the next")
+		return liveIncarnation(), nil
+	})
+	controller := NewController(api, provider, disabledPolicy())
+	controller.client = &csrReadClient{requests: []*certv1.CertificateSigningRequest{first, second}, claims: []karpv1.NodeClaim{launchedLegacyClaim()}}
+	_, err := controller.Reconcile(context.Background())
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	approvals := double.recordedApprovals()
+	require.Len(t, approvals, 1)
+	require.Equal(t, second.Name, approvals[0].Name)
+	require.Len(t, double.recordedReviews(), 1, "a timed-out authorization must not reach SAR or approval")
+}
+
+func TestReconcileReportsApprovalConflict(t *testing.T) {
+	api, double := newKubeAPIDouble(t)
+	double.sarAllowed = true
+	double.approvalConflict = true
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
+		return liveIncarnation(), nil
+	}))
+	controller.client = &csrReadClient{request: bootstrapCSR(nodeRequest(t, attestationVM.Name)), claims: []karpv1.NodeClaim{claimForFixture(t, "pending")}}
+
+	_, err := controller.Reconcile(context.Background())
+	require.Error(t, err, "a lost approval race is reported and retried against the reloaded request")
+	require.Empty(t, double.recordedApprovals())
 }
 
 type csrReadClient struct {
 	client.Client
 	request    *certv1.CertificateSigningRequest
+	requests   []*certv1.CertificateSigningRequest
 	claims     []karpv1.NodeClaim
 	claimError error
 	patched    []*karpv1.NodeClaim
@@ -262,7 +204,13 @@ func (c *csrReadClient) Patch(_ context.Context, obj client.Object, _ client.Pat
 func (c *csrReadClient) List(_ context.Context, list client.ObjectList, _ ...client.ListOption) error {
 	switch objects := list.(type) {
 	case *certv1.CertificateSigningRequestList:
-		objects.Items = []certv1.CertificateSigningRequest{*c.request.DeepCopy()}
+		requests := c.requests
+		if c.request != nil {
+			requests = []*certv1.CertificateSigningRequest{c.request}
+		}
+		for _, request := range requests {
+			objects.Items = append(objects.Items, *request.DeepCopy())
+		}
 	case *karpv1.NodeClaimList:
 		if c.claimError != nil {
 			return c.claimError
@@ -274,25 +222,71 @@ func (c *csrReadClient) List(_ context.Context, list client.ObjectList, _ ...cli
 	return nil
 }
 
-func approvalClient(t *testing.T) (kubernetes.Interface, <-chan certv1.CertificateSigningRequest) {
+// kubeAPIDouble serves the CSR approval and SubjectAccessReview endpoints the
+// controller calls and records what it received.
+type kubeAPIDouble struct {
+	mu               sync.Mutex
+	reviews          []authorizationv1.SubjectAccessReview
+	approvals        []certv1.CertificateSigningRequest
+	sarAllowed       bool
+	sarFailure       bool
+	approvalConflict bool
+}
+
+func (d *kubeAPIDouble) recordedReviews() []authorizationv1.SubjectAccessReview {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]authorizationv1.SubjectAccessReview(nil), d.reviews...)
+}
+
+func (d *kubeAPIDouble) recordedApprovals() []certv1.CertificateSigningRequest {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]certv1.CertificateSigningRequest(nil), d.approvals...)
+}
+
+func newKubeAPIDouble(t *testing.T) (kubernetes.Interface, *kubeAPIDouble) {
 	t.Helper()
-	approvals := make(chan certv1.CertificateSigningRequest, 10)
+	double := &kubeAPIDouble{}
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPut || r.URL.Path != "/apis/certificates.k8s.io/v1/certificatesigningrequests/csr-test/approval" {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/apis/authorization.k8s.io/v1/subjectaccessreviews":
+			if double.sarFailure {
+				http.Error(w, "subject access review unavailable", http.StatusInternalServerError)
+				return
+			}
+			var review authorizationv1.SubjectAccessReview
+			if err := json.NewDecoder(r.Body).Decode(&review); err != nil {
+				t.Errorf("decoding subject access review: %v", err)
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			double.mu.Lock()
+			double.reviews = append(double.reviews, review)
+			double.mu.Unlock()
+			review.Status.Allowed = double.sarAllowed
+			writeJSON(t, w, &review)
+		case r.Method == http.MethodPut && r.URL.Path == "/apis/certificates.k8s.io/v1/certificatesigningrequests/csr-test/approval",
+			r.Method == http.MethodPut && len(r.URL.Path) > len("/approval") && r.URL.Path[len(r.URL.Path)-len("/approval"):] == "/approval":
+			if double.approvalConflict {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"kind":"Status","apiVersion":"v1","status":"Failure","message":"the object has been modified","reason":"Conflict","code":409}`))
+				return
+			}
+			var request certv1.CertificateSigningRequest
+			if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+				t.Errorf("decoding approval: %v", err)
+				http.Error(w, "invalid request", http.StatusBadRequest)
+				return
+			}
+			double.mu.Lock()
+			double.approvals = append(double.approvals, request)
+			double.mu.Unlock()
+			writeJSON(t, w, &request)
+		default:
 			t.Errorf("unexpected Kubernetes request: %s %s", r.Method, r.URL.Path)
 			http.NotFound(w, r)
-			return
-		}
-		var request certv1.CertificateSigningRequest
-		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
-			t.Errorf("decoding approval: %v", err)
-			http.Error(w, "invalid request", http.StatusBadRequest)
-			return
-		}
-		approvals <- request
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(&request); err != nil {
-			t.Errorf("encoding approval response: %v", err)
 		}
 	}))
 	t.Cleanup(server.Close)
@@ -301,45 +295,67 @@ func approvalClient(t *testing.T) (kubernetes.Interface, <-chan certv1.Certifica
 		ContentConfig: rest.ContentConfig{ContentType: "application/json"},
 	})
 	require.NoError(t, err)
-	return api, approvals
+	return api, double
+}
+
+func writeJSON(t *testing.T, w http.ResponseWriter, value any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		t.Errorf("encoding response: %v", err)
+	}
 }
 
 func TestReconcileRecordsEnrollmentOnlyForApprovedBootstrap(t *testing.T) {
 	const nodeName = "karpenter-target"
 	enrolledAt := time.Date(2026, 11, 24, 12, 0, 0, 0, time.UTC)
+	identity := identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
+		return liveIncarnation(), nil
+	})
+	registeredFixtureClaim := registeredNodeClaim("registered", attestationVM.Name, attestationVM.ID)
+
 	for _, tt := range []struct {
 		name   string
 		csr    func(*testing.T) *certv1.CertificateSigningRequest
+		claims []karpv1.NodeClaim
 		record bool
 	}{
 		{
 			name: "bootstrap of a launched claim",
 			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
-				return bootstrapCSR(nodeRequest(t, "karpenter-pending"))
+				return bootstrapCSR(nodeRequest(t, attestationVM.Name))
 			},
+			claims: []karpv1.NodeClaim{claimForFixture(t, "pending")},
 			record: true,
+		},
+		{
+			name: "bootstrap request for a registered claim",
+			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
+				return bootstrapCSR(nodeRequest(t, attestationVM.Name))
+			},
+			claims: []karpv1.NodeClaim{registeredFixtureClaim},
 		},
 		{
 			name: "renewal of a registered node",
 			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
 				return nodeCSR(nodeRequest(t, nodeName), nodeName)
 			},
+			claims: []karpv1.NodeClaim{registeredNodeClaim("target", nodeName, 42)},
 		},
 		{
 			name: "request that is not authorized",
 			csr: func(t *testing.T) *certv1.CertificateSigningRequest {
-				return kubeletCSR(nodeRequest(t, "karpenter-pending"), "system:serviceaccount:default:csr-creator", nodePoolOrg)
+				return kubeletCSR(nodeRequest(t, attestationVM.Name), "system:serviceaccount:default:csr-creator", nodePoolOrg)
 			},
+			claims: []karpv1.NodeClaim{claimForFixture(t, "pending")},
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			api, approvals := approvalClient(t)
-			controller := NewController(api)
+			api, double := newKubeAPIDouble(t)
+			double.sarAllowed = true
+			controller := newTestController(t, api, identity)
 			controller.now = func() time.Time { return enrolledAt }
-			reads := &csrReadClient{
-				request: tt.csr(t),
-				claims:  []karpv1.NodeClaim{launchedNodeClaim("pending", "karpenter-pending"), registeredNodeClaim("target", nodeName)},
-			}
+			reads := &csrReadClient{request: tt.csr(t), claims: tt.claims}
 			controller.client = reads
 
 			_, err := controller.Reconcile(context.Background())
@@ -349,7 +365,7 @@ func TestReconcileRecordsEnrollmentOnlyForApprovedBootstrap(t *testing.T) {
 				require.Empty(t, reads.patched)
 				return
 			}
-			require.Len(t, approvals, 1)
+			require.Len(t, double.recordedApprovals(), 1)
 			require.Len(t, reads.patched, 1)
 			require.Equal(t, "pending", reads.patched[0].Name)
 			require.Equal(t, "2026-11-24T12:00:00Z", reads.patched[0].Annotations[v1alpha1.AnnotationKubeletEnrolledAt])
@@ -358,31 +374,31 @@ func TestReconcileRecordsEnrollmentOnlyForApprovedBootstrap(t *testing.T) {
 }
 
 func TestReconcileRecordsNoEnrollmentWhenApprovalFails(t *testing.T) {
-	server := httptest.NewServer(http.NotFoundHandler())
-	api, err := kubernetes.NewForConfig(&rest.Config{Host: server.URL, ContentConfig: rest.ContentConfig{ContentType: "application/json"}})
-	require.NoError(t, err)
-	server.Close()
-
-	controller := NewController(api)
+	api, double := newKubeAPIDouble(t)
+	double.sarAllowed = true
+	double.approvalConflict = true
+	controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
+		return liveIncarnation(), nil
+	}))
 	reads := &csrReadClient{
-		request: bootstrapCSR(nodeRequest(t, "karpenter-pending")),
-		claims:  []karpv1.NodeClaim{launchedNodeClaim("pending", "karpenter-pending")},
+		request: bootstrapCSR(nodeRequest(t, attestationVM.Name)),
+		claims:  []karpv1.NodeClaim{claimForFixture(t, "pending")},
 	}
 	controller.client = reads
 
-	_, err = controller.Reconcile(context.Background())
-	require.NoError(t, err)
+	_, err := controller.Reconcile(context.Background())
+	require.Error(t, err)
 	require.Empty(t, reads.patched, "a claim must not look enrolled while its certificate request is unapproved")
 }
 
 func TestReconcileRetriesMissedEnrollmentOnlyForOwnApprovals(t *testing.T) {
 	approved := func(reason string) *certv1.CertificateSigningRequest {
-		request := bootstrapCSR(nodeRequest(t, "karpenter-pending"))
+		request := bootstrapCSR(nodeRequest(t, attestationVM.Name))
 		request.Status.Conditions = []certv1.CertificateSigningRequestCondition{{Type: certv1.CertificateApproved, Status: "True", Reason: reason}}
 		return request
 	}
-	annotated := launchedNodeClaim("pending", "karpenter-pending")
-	annotated.Annotations = map[string]string{v1alpha1.AnnotationKubeletEnrolledAt: "2026-11-24T11:00:00Z"}
+	annotated := claimForFixture(t, "pending")
+	annotated.Annotations[v1alpha1.AnnotationKubeletEnrolledAt] = "2026-11-24T11:00:00Z"
 
 	for _, tt := range []struct {
 		name   string
@@ -390,20 +406,24 @@ func TestReconcileRetriesMissedEnrollmentOnlyForOwnApprovals(t *testing.T) {
 		claim  karpv1.NodeClaim
 		record bool
 	}{
-		{name: "own approval whose annotation write failed", csr: approved("KarpenterAutoApprover"), claim: launchedNodeClaim("pending", "karpenter-pending"), record: true},
-		{name: "approval by another approver", csr: approved("SomeoneElse"), claim: launchedNodeClaim("pending", "karpenter-pending")},
-		{name: "claim that has registered since", csr: approved("KarpenterAutoApprover"), claim: registeredNodeClaim("pending", "karpenter-pending")},
+		{name: "own approval whose annotation write failed", csr: approved("KarpenterAutoApprover"), claim: claimForFixture(t, "pending"), record: true},
+		{name: "approval by another approver", csr: approved("SomeoneElse"), claim: claimForFixture(t, "pending")},
+		{name: "claim that has registered since", csr: approved("KarpenterAutoApprover"), claim: registeredNodeClaim("pending", attestationVM.Name, attestationVM.ID)},
 		{name: "annotation already written", csr: approved("KarpenterAutoApprover"), claim: annotated},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			api, approvals := approvalClient(t)
-			controller := NewController(api)
+			api, double := newKubeAPIDouble(t)
+			double.sarAllowed = true
+			controller := newTestController(t, api, identityProviderFunc(func(context.Context, string, string) (*instance.InstanceIncarnation, error) {
+				t.Error("a decided request must not be attested again")
+				return nil, errors.New("unexpected identity lookup")
+			}))
 			reads := &csrReadClient{request: tt.csr, claims: []karpv1.NodeClaim{tt.claim}}
 			controller.client = reads
 
 			_, err := controller.Reconcile(context.Background())
 			require.NoError(t, err)
-			require.Empty(t, approvals, "the approval loop must not reapprove a decided request")
+			require.Empty(t, double.recordedApprovals(), "the approval loop must not reapprove a decided request")
 			if tt.record {
 				require.Len(t, reads.patched, 1)
 				require.Contains(t, reads.patched[0].Annotations, v1alpha1.AnnotationKubeletEnrolledAt)

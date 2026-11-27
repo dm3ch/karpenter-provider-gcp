@@ -8,6 +8,16 @@
 
 New VMs carry a `karpenter-k8s-gcp-nodeclaim-uid` label with the NodeClaim UID, and the claim records the VM's numeric Compute Engine ID in `karpenter.k8s.gcp/instance-numeric-id`, so a VM recreated under the same name can be told apart from the one Karpenter launched. A same-named VM that belongs to another NodeClaim is no longer adopted. A VM created by an earlier release has no label, so a new NodeClaim does not adopt it: its create reports `InstanceIncarnationUnknown` until the stale VM is deleted. Existing nodes and claims are not changed or replaced.
 
+### Kubelet enrollment on clusters with Shielded GKE Nodes disabled
+
+With Shielded GKE Nodes disabled, GKE nodes enroll as the legacy `kubelet` requester without a TPM proof. The controller now approves this only for the initial enrollment of one launched, unregistered NodeClaim whose live VM matches the numeric instance ID recorded on the claim and carries its NodeClaim UID label, only while a fresh read of the cluster setting (existing `container.clusters.get`) says disabled, and only if the original requester is allowed to `create certificatesigningrequests/nodeclient`. This is weaker than a TPM proof: the VM association does not show who sent the request, and a holder of the shared credential can ask for another eligible pending claim. See the [CSR approval contract](docs/security/csr-approval.md#legacy-bootstrap-with-shielded-gke-nodes-disabled).
+
+Nothing changes for clusters with Shielded GKE Nodes enabled: the `kubelet-nodepool-bootstrap`, `kubelet-bootstrap` and self-renewal approvals are unchanged, and no node is replaced.
+
+- The chart adds `create` on `subjectaccessreviews` to the controller's ClusterRole. If you manage RBAC yourself, add it. No GCP IAM change is needed.
+- New VMs carry a NodeClaim UID label and the claim records the VM ID in `karpenter.k8s.gcp/instance-numeric-id`. Claims and VMs created earlier have neither, so a legacy request for them stays pending, and an unlabelled VM is no longer adopted by a new claim (`InstanceIncarnationUnknown`). There is no backfill.
+- **Not validated** on real GKE: the legacy path (it has unit tests only), certificate rotation and drain-time re-enrollment. See [Proposal 0015](proposals/0015-gce-instance-bound-csr-approval.md).
+
 ### Default memory and CPU reservations follow the GKE 1.37.2+ formula
 
 New nodes whose selected bootstrap release is `1.37.2-gke.1325000` or later reserve memory as the lower of the earlier tiered reservation and `15 MiB × maxPods + BaseOverhead` (500 MiB on COS, 700 MiB on Ubuntu), and cap the CPU reservation at 1000m, matching GKE node pools. On a 16 GiB COS node with 110 pods the memory reservation falls from 2662 MiB to 2150 MiB, so nodes report more allocatable memory and workloads may pack onto fewer nodes. Existing nodes are unchanged until replaced. Node classes with the `Custom` image family keep the earlier formula.

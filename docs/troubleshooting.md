@@ -162,6 +162,7 @@ Karpenter runs a CSR approver controller that approves kubelet client CSRs (sign
 - The usages include `client auth` and are limited to `digital signature`, `key encipherment`, and `client auth`.
 - One of these is true:
   - The requester is a GKE bootstrap identity, `kubelet-nodepool-bootstrap` or `kubelet-bootstrap`, and `<name>` is the instance of a non-deleting GCE NodeClaim with `Launched=True` that has not registered yet.
+  - The exact legacy requester `kubelet` meets the [separate cluster-controlled legacy contract](security/csr-approval.md#legacy-bootstrap-with-shielded-gke-nodes-disabled): a cluster with Shielded GKE Nodes disabled, a live VM matching the NodeClaim's recorded ID and UID label, and an allowed `SubjectAccessReview`.
   - The requester is `system:node:<name>` in the authenticated `system:nodes` group, renewing its own certificate. A GCE NodeClaim has `Registered=True`, with both its node name and GCE instance name matching `<name>`. Self-renewal remains allowed during drain/deletion.
 
 Eligible NodeClaims must reference this provider's `GCENodeClass` and have a complete GCE ProviderID. See the [CSR approval security contract](security/csr-approval.md) for the authorization boundary, regression checks and remaining limitations.
@@ -174,7 +175,11 @@ The controller leaves every other CSR pending for GKE or a cluster administrator
 kubectl get csr
 ```
 
-Pending CSRs for Karpenter nodes should be approved automatically. If they are stuck in `Pending`, check the Karpenter controller logs for CSR-related errors (the reason a CSR was not approved is logged at debug level) and verify that the controller has the `certificates.k8s.io` RBAC permission to approve CSRs.
+Pending CSRs for Karpenter nodes should be approved automatically. If they are stuck in `Pending`, check the Karpenter controller logs for CSR-related errors (the reason a CSR was not approved is logged at debug level) and verify:
+
+- the controller has the `certificates.k8s.io` RBAC permission to approve CSRs and, for legacy requests, the `authorization.k8s.io` permission to create `subjectaccessreviews`;
+- for a `kubelet` (legacy) request, the cluster really has Shielded GKE Nodes disabled and the controller can read the cluster (`container.clusters.get`). An enabled, absent or unreadable setting leaves the request pending, and the debug log names the reason. Re-check after changing the cluster setting: the controller reads it again on every attempt;
+- the NodeClaim has the `karpenter.k8s.gcp/instance-numeric-id` annotation and its VM carries the NodeClaim UID label. Claims launched by an earlier release have neither, so a legacy request for them stays pending; replace them. A VM created before this release is also no longer adopted by a new NodeClaim: its create reports `InstanceIncarnationUnknown` until the stale VM is deleted.
 
 ---
 
