@@ -16,6 +16,11 @@ on:
 
 permissions: {}
 
+concurrency:
+  # Only the latest results matter; a newer run supersedes an older one.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   analysis:
     name: Scorecard analysis
