@@ -598,6 +598,39 @@ func writeJSON(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
+func TestInventoryDoesNotRecordLaunchIncarnation(t *testing.T) {
+	t.Parallel()
+	provider := newFakeComputeProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/projects/test-project/regions/us-central1":
+			writeJSON(w, &compute.Region{Zones: []string{"zones/us-central1-a"}})
+		case "/projects/test-project/zones/us-central1-a/instances":
+			writeJSON(w, &compute.InstanceList{Items: []*compute.Instance{{
+				Name: "legacy-node", Id: 987654321, MachineType: "machineTypes/e2-standard-2", Status: "RUNNING",
+				Labels: map[string]string{
+					utils.SanitizeGCELabelValue(utils.LabelNodePoolKey):     "test-pool",
+					utils.SanitizeGCELabelValue(utils.LabelGCENodeClassKey): "test-class",
+					utils.SanitizeGCELabelValue(utils.LabelClusterNameKey):  "test-cluster",
+				},
+			}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	provider.clusterName = "test-cluster"
+
+	instances, err := provider.List(context.Background())
+	require.NoError(t, err)
+	require.Len(t, instances, 1, "legacy VMs must remain visible for cleanup")
+	require.Equal(t, "legacy-node", instances[0].Name)
+	require.Zero(t, instances[0].NumericID, "inventory cannot establish NodeClaim ownership")
+	provider.instanceCache.Flush()
+	found, err := provider.Get(context.Background(), "gce://test-project/us-central1-a/legacy-node")
+	require.NoError(t, err)
+	require.Equal(t, "legacy-node", found.Name)
+	require.Zero(t, found.NumericID, "Get must not turn an inventory ID into a trusted launch record")
+}
+
 func metadataValue(meta *compute.Metadata, key string) string {
 	for _, item := range meta.Items {
 		if item.Key == key {
@@ -728,7 +761,7 @@ func TestDelete_IssuesDeleteWhenInstanceIsRunning(t *testing.T) {
 	p := newFakeComputeProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodDelete {
 			deleteCalled = true
-			writeJSON(w, &compute.Operation{Name: "op-123", Status: "DONE"})
+			writeJSON(w, &compute.Operation{Name: "op-123", Status: "DONE", TargetId: 1001})
 			return
 		}
 		writeJSON(w, &compute.Instance{Name: "karpenter-node1", Status: InstanceStatusRunning})
@@ -850,6 +883,7 @@ func TestAdoptExistingInstance_PopulatesFieldsFromGCEInstance(t *testing.T) {
 	p := &DefaultProvider{projectID: "my-project"}
 
 	gceInstance := &compute.Instance{
+		Id:                4567,
 		Name:              "karpenter-test-node",
 		Zone:              "https://www.googleapis.com/compute/v1/projects/my-project/zones/us-west4-a",
 		MachineType:       "https://www.googleapis.com/compute/v1/projects/my-project/zones/us-west4-a/machineTypes/n2-standard-8",
@@ -869,9 +903,13 @@ func TestAdoptExistingInstance_PopulatesFieldsFromGCEInstance(t *testing.T) {
 		},
 	}
 
-	result := p.adoptExistingInstance(ctx, gceInstance, karpv1.CapacityTypeSpot)
+	nodeClaim := &karpv1.NodeClaim{ObjectMeta: metav1.ObjectMeta{Name: "test-node", UID: "claim-uid"}}
+	gceInstance.Labels[utils.SanitizeGCELabelValue(utils.LabelNodeClaimUIDKey)] = string(nodeClaim.UID)
+
+	result := p.adoptExistingInstance(ctx, gceInstance, nodeClaim, karpv1.CapacityTypeSpot)
 
 	require.Equal(t, "karpenter-test-node", result.InstanceID)
+	require.Equal(t, uint64(4567), result.NumericID, "the adopted VM incarnation must be recorded")
 	require.Equal(t, "karpenter-test-node", result.Name)
 	require.Equal(t, "us-west4-a", result.Location, "zone URL should be trimmed to zone name")
 	require.Equal(t, "n2-standard-8", result.Type, "machineType URL should be trimmed to type name")
@@ -905,7 +943,7 @@ func TestAdoptExistingInstance_UsesActualStatusNotProvisioning(t *testing.T) {
 				Status:            status,
 				CreationTimestamp: "2025-10-31T11:09:17Z",
 			}
-			result := p.adoptExistingInstance(ctx, gceInstance, karpv1.CapacityTypeOnDemand)
+			result := p.adoptExistingInstance(ctx, gceInstance, &karpv1.NodeClaim{}, karpv1.CapacityTypeOnDemand)
 			require.Equal(t, status, result.Status)
 		})
 	}
@@ -1923,9 +1961,9 @@ func newFakeCreateProvider(t *testing.T, insertError func(instanceType, capacity
 				writeJSON(w, map[string]any{"error": map[string]any{"errors": []map[string]string{{"reason": reason}}}})
 				return
 			}
-			writeJSON(w, map[string]any{"name": "op-1", "status": "DONE"})
+			writeJSON(w, map[string]any{"name": "op-1", "status": "DONE", "targetId": "1001"})
 		case strings.Contains(r.URL.Path, "/operations/"):
-			writeJSON(w, map[string]any{"name": "op-1", "status": "DONE"})
+			writeJSON(w, map[string]any{"name": "op-1", "status": "DONE", "targetId": "1001"})
 		case strings.HasSuffix(r.URL.Path, "/aggregated/instances"):
 			writeJSON(w, map[string]any{})
 		default:
@@ -2877,11 +2915,12 @@ func TestWaitOperationDone_RetriesOnTransient503(t *testing.T) {
 			writeJSON(w, &googleapi.Error{Code: http.StatusServiceUnavailable, Message: "Visibility check was unavailable"})
 			return
 		}
-		writeJSON(w, &compute.Operation{Name: "op-123", Status: "DONE"})
+		writeJSON(w, &compute.Operation{Name: "op-123", Status: "DONE", TargetId: 1001})
 	}))
 
-	err := p.waitOperationDone(context.Background(), "us-central1-a", "op-123")
+	op, err := p.waitOperationDone(context.Background(), "us-central1-a", "op-123")
 	require.NoError(t, err)
+	require.Equal(t, uint64(1001), op.TargetId, "the terminal operation carries the created resource's ID")
 
 	require.Equal(t, int32(3), callCount.Load())
 }
@@ -2897,7 +2936,7 @@ func TestWaitOperationDone_FailsOnPersistent503(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	err := p.waitOperationDone(ctx, "us-central1-a", "op-123")
+	_, err := p.waitOperationDone(ctx, "us-central1-a", "op-123")
 
 	require.Error(t, err)
 }
@@ -3601,7 +3640,7 @@ func TestGetOrCreateInstance_AdoptsInstanceFromEarlierAttemptZone(t *testing.T) 
 	p := newFakeComputeProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			insertCalled = true
-			writeJSON(w, &compute.Operation{Name: "op-123", Status: "DONE"})
+			writeJSON(w, &compute.Operation{Name: "op-123", Status: "DONE", TargetId: 1001})
 			return
 		}
 		if strings.Contains(r.URL.Path, "/zones/us-central1-f/instances/") {
@@ -3638,7 +3677,7 @@ func TestGetOrCreateInstance_AdoptsInstanceInSelectedZone(t *testing.T) {
 	p := newFakeComputeProvider(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPost {
 			insertCalled = true
-			writeJSON(w, &compute.Operation{Name: "op-123", Status: "DONE"})
+			writeJSON(w, &compute.Operation{Name: "op-123", Status: "DONE", TargetId: 1001})
 			return
 		}
 		writeJSON(w, &compute.Instance{

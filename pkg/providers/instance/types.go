@@ -49,8 +49,12 @@ type Instance struct {
 	KubeLabels map[string]string `json:"kubeLabels,omitempty"`
 	Location   string            `json:"location"`
 	Name       string            `json:"name"`
-	ProjectID  string            `json:"projectId"`
-	Status     string            `json:"status"`
-	Tags       map[string]string `json:"tags"`
-	Type       string            `json:"type"`
+	// NumericID is the VM incarnation established by Create or ownership-checked
+	// adoption for the NodeClaim's trusted launch record. Get/List inventory leaves
+	// it zero: observing a numeric VM ID alone does not establish claim ownership.
+	NumericID uint64            `json:"numericId"`
+	ProjectID string            `json:"projectId"`
+	Status    string            `json:"status"`
+	Tags      map[string]string `json:"tags"`
+	Type      string            `json:"type"`
 }

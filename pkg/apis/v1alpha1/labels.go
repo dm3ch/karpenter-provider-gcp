@@ -180,6 +180,10 @@ var (
 	// NodeCreatedByController is the AnnotationNodeCreatedBy value for the node
 	// creation controller.
 	NodeCreatedByController = "nodecreation-controller"
+	// AnnotationInstanceNumericID records the numeric Compute Engine instance ID of the
+	// VM launched for a NodeClaim. Unlike the VM name it identifies one incarnation, so a
+	// same-named replacement VM cannot be mistaken for the VM Karpenter launched.
+	AnnotationInstanceNumericID = apis.Group + "/instance-numeric-id"
 
 	TagNodeClaim = coreapis.Group + "/nodeclaim"
 	TagName      = "Name"

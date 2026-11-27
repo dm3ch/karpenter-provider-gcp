@@ -4,6 +4,10 @@
 
 ## Unreleased
 
+### Launched VMs are recorded by numeric ID and NodeClaim UID
+
+New VMs carry a `karpenter-k8s-gcp-nodeclaim-uid` label with the NodeClaim UID, and the claim records the VM's numeric Compute Engine ID in `karpenter.k8s.gcp/instance-numeric-id`, so a VM recreated under the same name can be told apart from the one Karpenter launched. A same-named VM that belongs to another NodeClaim is no longer adopted. A VM created by an earlier release has no label, so a new NodeClaim does not adopt it: its create reports `InstanceIncarnationUnknown` until the stale VM is deleted. Existing nodes and claims are not changed or replaced.
+
 ### Default memory and CPU reservations follow the GKE 1.37.2+ formula
 
 New nodes whose selected bootstrap release is `1.37.2-gke.1325000` or later reserve memory as the lower of the earlier tiered reservation and `15 MiB × maxPods + BaseOverhead` (500 MiB on COS, 700 MiB on Ubuntu), and cap the CPU reservation at 1000m, matching GKE node pools. On a 16 GiB COS node with 110 pods the memory reservation falls from 2662 MiB to 2150 MiB, so nodes report more allocatable memory and workloads may pack onto fewer nodes. Existing nodes are unchanged until replaced. Node classes with the `Custom` image family keep the earlier formula.

@@ -20,6 +20,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/awslabs/operatorpkg/status"
@@ -110,11 +111,13 @@ func (c *CloudProvider) Create(ctx context.Context, nodeClaim *karpv1.NodeClaim)
 	if err != nil {
 		return nil, err
 	}
-	if readinessErr != nil {
-		instanceType, err = c.applyAdoptedNodeOverlay(ctx, nodeClaim, instanceType)
-		if err != nil {
-			return nil, err
-		}
+	instanceType, err = c.applyAdoptedNodeOverlay(ctx, nodeClaim, instanceType, readinessErr != nil)
+	if err != nil {
+		return nil, err
+	}
+
+	if err := checkLaunchableIncarnation(nodeClaim, inst); err != nil {
+		return nil, err
 	}
 
 	nc := c.instanceToNodeClaim(inst, instanceType)
@@ -142,8 +145,30 @@ func (c *CloudProvider) recordNodeLabels(nc *karpv1.NodeClaim, inst *instance.In
 	nc.Annotations = lo.Assign(nc.Annotations, map[string]string{v1alpha1.AnnotationNodeLabels: metadata.Labels(labels).String()})
 }
 
-func (c *CloudProvider) applyAdoptedNodeOverlay(ctx context.Context, nodeClaim *karpv1.NodeClaim, instanceType *cloudprovider.InstanceType) (*cloudprovider.InstanceType, error) {
-	if instanceType == nil || !karpoptions.FromContext(ctx).FeatureGates.NodeOverlay {
+// checkLaunchableIncarnation refuses to return a NodeClaim for a VM that cannot be
+// bound to a trusted incarnation. Get, List and Adopt still surface VMs launched
+// before the ownership label existed so they can be cleaned up and keep renewing,
+// but a claim must not be marked launched while its incarnation is unknown and a
+// recorded incarnation must never be replaced. The core launch path merges returned
+// annotations over the existing NodeClaim, so both checks have to fail the create.
+func checkLaunchableIncarnation(nodeClaim *karpv1.NodeClaim, inst *instance.Instance) error {
+	if inst.NumericID == 0 {
+		return cloudprovider.NewCreateError(
+			fmt.Errorf("instance %s has no trusted numeric instance ID for NodeClaim %s", inst.Name, nodeClaim.Name),
+			"InstanceIncarnationUnknown",
+			"Existing instance has no recorded VM incarnation; delete or replace the NodeClaim to launch a new VM")
+	}
+	recorded := nodeClaim.Annotations[v1alpha1.AnnotationInstanceNumericID]
+	if recorded == "" || recorded == strconv.FormatUint(inst.NumericID, 10) {
+		return nil
+	}
+	return cloudprovider.NewCreateError(
+		fmt.Errorf("instance %s has numeric ID %d but NodeClaim %s recorded %s", inst.Name, inst.NumericID, nodeClaim.Name, recorded),
+		"InstanceIncarnationMismatch", "The instance for this NodeClaim is a different VM incarnation")
+}
+
+func (c *CloudProvider) applyAdoptedNodeOverlay(ctx context.Context, nodeClaim *karpv1.NodeClaim, instanceType *cloudprovider.InstanceType, adopted bool) (*cloudprovider.InstanceType, error) {
+	if !adopted || instanceType == nil || !karpoptions.FromContext(ctx).FeatureGates.NodeOverlay {
 		return instanceType, nil
 	}
 	nodePoolName, ok := nodeClaim.Labels[karpv1.NodePoolLabelKey]
@@ -543,6 +568,10 @@ func (c *CloudProvider) instanceToNodeClaim(i *instance.Instance, instanceType *
 	// enter the cache or appear in List().
 	if v, ok := i.Labels[utils.LabelClusterLocationKey]; ok {
 		labels[utils.LabelClusterLocationKey] = v
+	}
+
+	if i.NumericID != 0 {
+		annotations[v1alpha1.AnnotationInstanceNumericID] = strconv.FormatUint(i.NumericID, 10)
 	}
 
 	nodeClaim.Labels = labels
