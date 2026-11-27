@@ -33,7 +33,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-tpm/legacy/tpm2"
+	"github.com/google/go-tpm/tpm2"
 	"github.com/stretchr/testify/require"
 )
 
@@ -102,14 +102,18 @@ func certifyKey(t *testing.T, key *ecdsa.PrivateKey, ak *rsa.PrivateKey) (data, 
 	t.Helper()
 	public, err := gkeKubeletPublic(key.Public())
 	require.NoError(t, err)
-	name, err := public.Name()
+	name, err := tpm2.ObjectName(public)
 	require.NoError(t, err)
-	data, err = (&tpm2.AttestationData{
-		Magic:               0xff544347,
-		Type:                tpm2.TagAttestCertify,
-		AttestedCertifyInfo: &tpm2.CertifyInfo{Name: name, QualifiedName: name},
-	}).Encode()
-	require.NoError(t, err)
+	// A real TPM's qualified name differs from the name; any distinct value works here.
+	qualified := tpm2.TPM2BName{Buffer: append([]byte{0}, name.Buffer...)}
+	data = tpm2.Marshal(&tpm2.TPMSAttest{
+		Magic: tpm2.TPMGeneratedValue,
+		Type:  tpm2.TPMSTAttestCertify,
+		Attested: tpm2.NewTPMUAttest(tpm2.TPMSTAttestCertify, &tpm2.TPMSCertifyInfo{
+			Name:          *name,
+			QualifiedName: qualified,
+		}),
+	})
 	return data, signAttestation(t, ak, data)
 }
 
@@ -377,7 +381,20 @@ func TestVerifyAttestationProof(t *testing.T) {
 			request: func(t *testing.T) ([]byte, *rsa.PublicKey) {
 				// Re-tag the certify structure as a quote; the signature still verifies.
 				data := append([]byte{}, fixture.data...)
-				data[5] = byte(uint16(tpm2.TagAttestQuote) & 0xff)
+				data[5] = byte(uint16(tpm2.TPMSTAttestQuote) & 0xff)
+				blocks := fixture.blocks(t)
+				blocks[2] = pemBlock{Type: attestationDataBlock, Bytes: data}
+				blocks[3] = pemBlock{Type: attestationSignatureBlock, Bytes: signAttestation(t, fixture.ak, data)}
+				return encodePEMBlocks(blocks), &fixture.ak.PublicKey
+			},
+		},
+		{
+			name: "attestation data without the TPM_GENERATED magic",
+			request: func(t *testing.T) ([]byte, *rsa.PublicKey) {
+				// Only the magic differs; the AK signature still verifies, so only the
+				// explicit magic check can reject it.
+				data := append([]byte{}, fixture.data...)
+				data[0] ^= 0xff
 				blocks := fixture.blocks(t)
 				blocks[2] = pemBlock{Type: attestationDataBlock, Bytes: data}
 				blocks[3] = pemBlock{Type: attestationSignatureBlock, Bytes: signAttestation(t, fixture.ak, data)}
@@ -496,14 +513,10 @@ func TestGKEKubeletPublic(t *testing.T) {
 			require.NoError(t, err)
 			public, err := gkeKubeletPublic(key)
 			require.NoError(t, err)
-			encoded, err := public.Encode()
+			require.Equal(t, vector.Public, hex.EncodeToString(tpm2.Marshal(public)))
+			name, err := tpm2.ObjectName(public)
 			require.NoError(t, err)
-			require.Equal(t, vector.Public, hex.EncodeToString(encoded))
-			name, err := public.Name()
-			require.NoError(t, err)
-			encodedName, err := name.Encode()
-			require.NoError(t, err)
-			require.Equal(t, vector.TPMName, hex.EncodeToString(encodedName))
+			require.Equal(t, vector.TPMName, hex.EncodeToString(tpm2.Marshal(name)))
 		})
 	}
 }

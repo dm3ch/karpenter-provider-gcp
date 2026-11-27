@@ -29,7 +29,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/google/go-tpm/legacy/tpm2"
+	"github.com/google/go-tpm/tpm2"
 )
 
 // The GKE exec auth plugin appends these blocks to a kubelet client CSR:
@@ -174,42 +174,47 @@ func verifyAttestationProof(proof attestationProof, csr *x509.CertificateRequest
 		return fmt.Errorf("verifying TPM certification signature with the VM attestation key: %w", err)
 	}
 
-	// DecodeAttestationData tolerates trailing bytes, so re-encode and compare to
-	// reject a non-canonical certification structure.
-	attestationData, err := tpm2.DecodeAttestationData(proof.attestationData)
+	// Unmarshal tolerates trailing bytes, so re-encode and compare to reject a
+	// non-canonical certification structure.
+	attestationData, err := tpm2.Unmarshal[tpm2.TPMSAttest](proof.attestationData)
 	if err != nil {
 		return fmt.Errorf("parsing TPM certification data: %w", err)
 	}
-	if attestationData.Type != tpm2.TagAttestCertify || attestationData.AttestedCertifyInfo == nil {
+	// go-tpm's unmarshaller does not enforce the TPM_GENERATED magic tag, so check
+	// it explicitly: it marks the structure as produced by the TPM itself.
+	if err := attestationData.Magic.Check(); err != nil {
+		return fmt.Errorf("TPM certification data: %w", err)
+	}
+	if attestationData.Type != tpm2.TPMSTAttestCertify {
 		return fmt.Errorf("TPM attestation data is not a certify structure")
 	}
-	encoded, err := attestationData.Encode()
-	if err != nil {
-		return fmt.Errorf("encoding TPM certification data: %w", err)
-	}
-	if !bytes.Equal(encoded, proof.attestationData) {
+	if !bytes.Equal(tpm2.Marshal(attestationData), proof.attestationData) {
 		return fmt.Errorf("TPM certification data is not canonical or has trailing data")
+	}
+	certifyInfo, err := attestationData.Attested.Certify()
+	if err != nil {
+		return fmt.Errorf("reading TPM certify info: %w", err)
 	}
 
 	public, err := gkeKubeletPublic(csr.PublicKey)
 	if err != nil {
 		return fmt.Errorf("converting the CSR public key to a TPM public structure: %w", err)
 	}
-	matches, err := attestationData.AttestedCertifyInfo.Name.MatchesPublic(public)
+	name, err := tpm2.ObjectName(public)
 	if err != nil {
-		return fmt.Errorf("comparing TPM-certified public object with the CSR public key: %w", err)
+		return fmt.Errorf("computing the TPM name of the CSR public key: %w", err)
 	}
-	if !matches {
+	if !bytes.Equal(name.Buffer, certifyInfo.Name.Buffer) {
 		return errors.New("TPM-certified public object does not match the CSR public key")
 	}
 	return nil
 }
 
-var gkeTPMCurves = map[string]tpm2.EllipticCurve{
-	elliptic.P224().Params().Name: tpm2.CurveNISTP224,
-	elliptic.P256().Params().Name: tpm2.CurveNISTP256,
-	elliptic.P384().Params().Name: tpm2.CurveNISTP384,
-	elliptic.P521().Params().Name: tpm2.CurveNISTP521,
+var gkeTPMCurves = map[string]tpm2.TPMECCCurve{
+	elliptic.P224().Params().Name: tpm2.TPMECCNistP224,
+	elliptic.P256().Params().Name: tpm2.TPMECCNistP256,
+	elliptic.P384().Params().Name: tpm2.TPMECCNistP384,
+	elliptic.P521().Params().Name: tpm2.TPMECCNistP521,
 }
 
 // gkeKubeletPublic reconstructs GKE's imported kubelet-key TPM template.
@@ -218,42 +223,46 @@ var gkeTPMCurves = map[string]tpm2.EllipticCurve{
 // https://github.com/kubernetes/cloud-provider-gcp/blob/de598a6a3590934e8b352db066038015b2649600/pkg/tpmattest/tpmattest.go
 // Copyright 2018 The Kubernetes Authors.
 // Licensed under the Apache License, Version 2.0.
-// Changes: uses go-tpm's legacy/tpm2 import path and standard-library public-key
+// Changes: uses go-tpm's tpm2 structures and standard-library public-key
 // encoding, preserving the producer's minimally encoded coordinates.
-func gkeKubeletPublic(pub crypto.PublicKey) (tpm2.Public, error) {
+func gkeKubeletPublic(pub crypto.PublicKey) (*tpm2.TPMTPublic, error) {
 	ecKey, ok := pub.(*ecdsa.PublicKey)
 	if !ok {
-		return tpm2.Public{}, fmt.Errorf("public key in CSR is %T, only ECDSA keys supported", pub)
+		return nil, fmt.Errorf("public key in CSR is %T, only ECDSA keys supported", pub)
 	}
 
 	curveName := ecKey.Curve.Params().Name
 	curve, ok := gkeTPMCurves[curveName]
 	if !ok {
-		return tpm2.Public{}, fmt.Errorf("public key EC curve %q not supported", curveName)
+		return nil, fmt.Errorf("public key EC curve %q not supported", curveName)
 	}
 	point, err := ecKey.Bytes()
 	if err != nil {
-		return tpm2.Public{}, fmt.Errorf("encoding public key point: %w", err)
+		return nil, fmt.Errorf("encoding public key point: %w", err)
 	}
 	// Bytes returns a validated SEC1 point. GKE's template uses minimal integer
 	// coordinates, not SEC1's fixed-width coordinates; padding changes the Name.
 	size := (len(point) - 1) / 2
-	return tpm2.Public{
-		Type:    tpm2.AlgECC,
-		NameAlg: tpm2.AlgSHA256,
-		// Allow access for TPM user with password auth. FlagSign is required
-		// to load the key (either Sign or Decrypt).
-		Attributes: tpm2.FlagSign | tpm2.FlagUserWithAuth,
-		ECCParameters: &tpm2.ECCParams{
+	return &tpm2.TPMTPublic{
+		Type:    tpm2.TPMAlgECC,
+		NameAlg: tpm2.TPMAlgSHA256,
+		// Allow access for TPM user with password auth. Sign is required to load
+		// the key (either Sign or Decrypt).
+		ObjectAttributes: tpm2.TPMAObject{SignEncrypt: true, UserWithAuth: true},
+		Parameters: tpm2.NewTPMUPublicParms(tpm2.TPMAlgECC, &tpm2.TPMSECCParms{
+			Symmetric: tpm2.TPMTSymDefObject{Algorithm: tpm2.TPMAlgNull},
+			Scheme: tpm2.TPMTECCScheme{
+				Scheme: tpm2.TPMAlgECDSA,
+				Details: tpm2.NewTPMUAsymScheme(tpm2.TPMAlgECDSA, &tpm2.TPMSSigSchemeECDSA{
+					HashAlg: tpm2.TPMAlgSHA256,
+				}),
+			},
 			CurveID: curve,
-			Sign: &tpm2.SigScheme{
-				Alg:  tpm2.AlgECDSA,
-				Hash: tpm2.AlgSHA256,
-			},
-			Point: tpm2.ECPoint{
-				XRaw: bytes.TrimLeft(point[1:1+size], "\x00"),
-				YRaw: bytes.TrimLeft(point[1+size:], "\x00"),
-			},
-		},
+			KDF:     tpm2.TPMTKDFScheme{Scheme: tpm2.TPMAlgNull},
+		}),
+		Unique: tpm2.NewTPMUPublicID(tpm2.TPMAlgECC, &tpm2.TPMSECCPoint{
+			X: tpm2.TPM2BECCParameter{Buffer: bytes.TrimLeft(point[1:1+size], "\x00")},
+			Y: tpm2.TPM2BECCParameter{Buffer: bytes.TrimLeft(point[1+size:], "\x00")},
+		}),
 	}, nil
 }
