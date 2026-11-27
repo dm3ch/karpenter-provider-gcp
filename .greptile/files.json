@@ -11,6 +11,11 @@
       "scope": ["charts/**", "hack/security/**"]
     },
     {
+      "path": "pkg/controllers/csr/fuzz_test.go",
+      "description": "Pattern for fuzz targets over untrusted-input parsers and verifiers: seeds, stated properties, no panics, invalid input never accepted",
+      "scope": ["pkg/controllers/**"]
+    },
+    {
       "path": "charts/karpenter/templates/clusterrole-core.yaml",
       "description": "Declared controller CSR read and approval permissions",
       "scope": ["pkg/controllers/csr/**", "hack/security/**"]

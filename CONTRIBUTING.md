@@ -171,6 +171,18 @@ This guides breaks down into two parts
    make run
    ```
 
+### Fuzz tests
+
+Code that decodes or verifies bytes an untrusted party controls, such as the CSR request field and the proofs inside it, has native Go fuzz targets (`func FuzzXxx(f *testing.F)`) in a `fuzz_test.go` or `*_fuzz_test.go` file next to the code. A target has seeds for a valid input and its empty, truncated and corrupted forms, and asserts a property: arbitrary input never panics, invalid input is never accepted, and accepted input satisfies what the caller relies on.
+
+`make ut-test` runs every seed as an ordinary unit test. `make fuzz` explores each target for `FUZZTIME` (15s by default; `FUZZTIME=0` skips) and runs in `make ci`. Pull requests and pushes use a short pass; a weekly scheduled run uses a longer one. To explore one target for longer:
+
+```bash
+go test ./pkg/controllers/csr -run '^$' -fuzz '^FuzzParseKubeletClientRequest$' -fuzztime 5m
+```
+
+When fuzzing finds a failure, Go prints the failing input and writes it under `testdata/fuzz/<Target>/`. Fix the bug and commit that file as a regression case.
+
 ### End-to-end tests
 
 E2e tests run against a real GKE cluster. The cluster is **not** torn down between runs — it is reused across test sessions to save setup time.

@@ -9,6 +9,14 @@
       "severity": "high"
     },
     {
+      "id": "fuzz-untrusted-input",
+      "rule": "For new or materially changed Go code that decodes or verifies bytes an untrusted party controls (the CSR request field and its PEM, DER, JSON and TPM contents, signatures and proofs, other requester, kubelet or VM supplied data), check for a native Go fuzz target `FuzzXxx(f *testing.F)` in a fuzz_test.go or *_fuzz_test.go file next to the code. A good target is deterministic and offline, has seeds for a valid input and its empty, truncated and corrupted forms, and asserts a property: arbitrary input never panics, invalid input is never accepted, accepted input satisfies the caller's invariant. `go test` runs the seeds and `make fuzz`, part of `make ci`, explores each target for a bounded time. Use pkg/controllers/csr/fuzz_test.go as the pattern. Recommend one only when no equivalent exists and the code has its own parsing or verification logic. Do not request it for values already decoded by Kubernetes or GCP client libraries, pure policy or state logic, thin wrappers over a standard-library parser, generated code or vendor, and do not ask for longer fuzzing campaigns or coverage targets. A missing target is medium severity; a target without a stated property or seeds is low.",
+      "scope": [
+        "pkg/controllers/csr/**"
+      ],
+      "severity": "medium"
+    },
+    {
       "id": "provider-boundaries",
       "rule": "Provider changes should respect package ownership: instance owns GCE VM lifecycle, instance labels/tags, scheduling, capacity errors, zone operations, and provider-owned bootstrap policy; nodepooltemplate owns bootstrap source pool/template discovery; gke owns shared GKE cluster facts; pkg/metadata owns pure GKE bootstrap metadata modeling, parsing, typed mutation helpers, and Compute API rendering.",
       "scope": ["pkg/providers/**", "pkg/metadata/**"],

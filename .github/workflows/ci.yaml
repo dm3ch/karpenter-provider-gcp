@@ -4,6 +4,9 @@ on:
   push:
     branches: [ "main" ]
   pull_request: {}
+  schedule:
+    # A longer weekly fuzzing pass; pull requests and pushes run a short bounded one.
+    - cron: '30 4 * * 1'
 
 permissions:
   contents: read
@@ -17,6 +20,9 @@ jobs:
   presubmit:
     name: Lint and tests
     runs-on: ubuntu-latest
+    env:
+      # `make ci` explores every fuzz target for this long (see `make fuzz`).
+      FUZZTIME: ${{ github.event_name == 'schedule' && '5m' || '20s' }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:

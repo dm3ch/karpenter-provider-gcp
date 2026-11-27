@@ -25,6 +25,14 @@ Compare types, allowed values, units, defaults, and omitted versus explicit fals
 
 Only flag concrete, avoidable mismatches introduced or materially changed by the PR. Cite the equivalent GKE/Terraform field and reference, suggest the aligned API shape, and account for any documented reason for divergence. Verify that generated CRDs, reference docs, and examples match the chosen API; do not report an already-correct nested field or a justified exception as a violation.
 
+## Fuzz coverage for untrusted-input parsers and verifiers
+
+For new or materially changed Go code that decodes or verifies bytes an untrusted party controls, expect a native Go fuzz target. In scope: the CSR `request` field and anything inside it (PEM, DER/ASN.1, JSON, TPM structures), signatures and proofs, and other data supplied by a requester, kubelet or VM. Out of scope: values already decoded by Kubernetes or GCP client libraries, pure policy or state logic that table tests cover better, thin wrappers around a standard-library parser with no logic of their own, generated code and `vendor/`.
+
+A good target is a `FuzzXxx(f *testing.F)` function in a `fuzz_test.go` or `*_fuzz_test.go` file next to the code. It needs seeds for a valid input and its empty, truncated and corrupted forms, and it asserts a stated property: arbitrary input never panics, invalid input is never accepted, and accepted input satisfies the invariant the caller relies on. Targets must be deterministic and offline, because `go test` runs every seed as an ordinary unit test and `make fuzz` (part of `make ci`) explores each target for a bounded time. Use `pkg/controllers/csr/fuzz_test.go` as the pattern.
+
+Recommend a target only when no equivalent exists and the code has its own parsing or verification logic. Do not ask for longer fuzzing campaigns, coverage targets, or fuzzing of refactors that leave parsing unchanged. Treat a missing target as a medium-severity gap, and a target with no stated property or no seeds as a low-severity one. When fuzzing finds a crasher, expect the minimized input committed under `testdata/fuzz/` as a regression case.
+
 ## End-to-end coverage opportunities
 
 For new or materially changed user-visible behavior, consider whether an end-to-end test would cover integration risk that unit tests cannot. Recommend one only when the behavior crosses real GKE, GCP, Kubernetes, controller, or node boundaries; has stable observable outcomes; and can be exercised economically in the existing `test/suites` environment.
