@@ -18,6 +18,7 @@ package instancetype
 
 import (
 	"context"
+	"errors"
 	"net/http"
 
 	"cloud.google.com/go/compute/apiv1/computepb"
@@ -84,3 +85,7 @@ func newTestProvider() *DefaultProvider {
 }
 
 func (*fakeGKEProvider) InvalidateClusterConfig() {}
+
+func (*fakeGKEProvider) ShieldedNodesEnabled(context.Context) (bool, error) {
+	return false, errors.New("cluster shielded nodes policy is not faked")
+}

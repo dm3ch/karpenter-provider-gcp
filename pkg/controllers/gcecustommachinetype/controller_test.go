@@ -387,3 +387,7 @@ func TestEnqueueSiblingsWithSameMachineType(t *testing.T) {
 }
 
 func (*fakeGKEProvider) InvalidateClusterConfig() {}
+
+func (*fakeGKEProvider) ShieldedNodesEnabled(context.Context) (bool, error) {
+	return false, errors.New("cluster shielded nodes policy is not faked")
+}

@@ -98,6 +98,7 @@ type Provider interface {
 	List(context.Context) ([]*Instance, error)
 	Delete(context.Context, string) error
 	CreateTags(context.Context, string, map[string]string) error
+	GetIncarnation(context.Context, string, string) (*InstanceIncarnation, error)
 }
 
 type DefaultProvider struct {
