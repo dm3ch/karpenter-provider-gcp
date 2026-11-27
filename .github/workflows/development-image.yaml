@@ -4,6 +4,15 @@ on:
   push:
     branches: [ "main" ]
 
+# Deny by default; the job below grants only what it needs.
+permissions: {}
+
+concurrency:
+  # One publish per commit. Never cancel or replace a queued run: every main
+  # commit must get its sha-<commit> image tag.
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
 jobs:
   latest-image-build-publish:
     name: Publish image
@@ -11,7 +20,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
+      packages: write # Push the development image to GHCR.
     steps:
       - uses: actions/checkout@v7.0.1
         with:

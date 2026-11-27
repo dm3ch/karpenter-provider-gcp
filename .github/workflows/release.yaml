@@ -5,6 +5,15 @@ on:
     tags:
       - 'v[0-9]+.[0-9]+.[0-9]+'
       - 'v[0-9]+.[0-9]+.[0-9]+-*'
+
+# Deny by default; each job grants only what it needs.
+permissions: {}
+
+concurrency:
+  # Serialize runs for the same tag and never cancel a release in flight.
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   image-publish:
     name: Publish image
@@ -12,9 +21,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
+      packages: write # Push the release image to GHCR.
+      id-token: write # Sign the image with Cosign and attest provenance (Sigstore OIDC).
+      attestations: write # Store the image build-provenance attestation.
     steps:
       - name: Set tag
         run: |
@@ -110,9 +119,9 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      packages: write
-      id-token: write
-      attestations: write
+      packages: write # Push charts and Artifact Hub metadata to GHCR.
+      id-token: write # Attest chart provenance (Sigstore OIDC).
+      attestations: write # Store the chart build-provenance attestation.
     environment:
       name: helm-release
     steps:

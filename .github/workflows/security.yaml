@@ -11,6 +11,11 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  # Supersede stale pull-request runs; every push, schedule and manual run stays independent.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   dependency-review:
     name: Dependency review
@@ -19,7 +24,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: read # Read the pull request whose dependency changes are reviewed.
     steps:
       - uses: actions/dependency-review-action@v5.0.1
         with:
@@ -63,8 +68,8 @@ jobs:
       github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
-      security-events: write
-      actions: read
+      security-events: write # Upload CodeQL results to code scanning.
+      actions: read # CodeQL reads workflow run details (required for private repositories).
       contents: read
     strategy:
       fail-fast: false
@@ -117,7 +122,10 @@ jobs:
           online-audits: false
           advanced-security: false
           annotations: true
-          min-severity: high
+          # Pedantic adds code-smell audits (undocumented permissions, missing
+          # concurrency limits); fail on low severity and above.
+          persona: pedantic
+          min-severity: low
 
   zizmor-sarif:
     name: zizmor SARIF (GitHub Actions)
@@ -131,7 +139,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      security-events: write
+      security-events: write # Upload zizmor results to code scanning.
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -141,6 +149,7 @@ jobs:
         uses: zizmorcore/zizmor-action@v0.8.1
         with:
           online-audits: false
+          persona: pedantic
       - name: Retain zizmor findings
         if: ${{ !cancelled() && steps.zizmor.outcome == 'success' }}
         uses: actions/upload-artifact@v7.0.2
@@ -281,7 +290,7 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      security-events: write
+      security-events: write # Upload scanner results to code scanning.
     steps:
       - uses: actions/checkout@v7.0.1
         with:

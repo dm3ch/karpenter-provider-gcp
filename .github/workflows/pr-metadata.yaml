@@ -84,8 +84,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write
-      pull-requests: write
+      issues: write # Create the size/* labels.
+      pull-requests: write # Apply the size label to the pull request.
     concurrency:
       group: pr-size-${{ github.event.pull_request.number }}
       cancel-in-progress: true
