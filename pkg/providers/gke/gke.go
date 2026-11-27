@@ -20,10 +20,12 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"cloud.google.com/go/compute/metadata"
 	"github.com/patrickmn/go-cache"
 	"google.golang.org/api/compute/v1"
 	containerv1 "google.golang.org/api/container/v1"
@@ -39,9 +41,10 @@ const (
 	clusterCacheTTL      = 30 * time.Minute
 	serverConfigCacheTTL = 30 * time.Minute
 
-	zoneCacheKey         = "zone-cache"
-	clusterCacheKey      = "cluster"
-	serverConfigCacheKey = "server-config"
+	zoneCacheKey          = "zone-cache"
+	clusterCacheKey       = "cluster"
+	serverConfigCacheKey  = "server-config"
+	projectNumberCacheKey = "project-number"
 )
 
 // IsMultiNetworkingEnabled interprets the networking capability in the fetched cluster config.
@@ -54,6 +57,7 @@ type Provider interface {
 	GetClusterConfig(ctx context.Context) (*containerv1.Cluster, error)
 	InvalidateClusterConfig()
 	GetServerConfig(ctx context.Context) (*containerv1.ServerConfig, error)
+	ProjectNumber(ctx context.Context) (uint64, error)
 	ShieldedNodesEnabled(ctx context.Context) (bool, error)
 }
 
@@ -70,6 +74,7 @@ type DefaultProvider struct {
 	zoneCache         *cache.Cache
 	clusterCache      *cache.Cache
 	serverConfigCache *cache.Cache
+	projectNumCache   *cache.Cache
 }
 
 func NewDefaultProvider(computeService *compute.Service, containerService *containerv1.Service, projectID, nodeLocation, clusterName string) Provider {
@@ -82,6 +87,8 @@ func NewDefaultProvider(computeService *compute.Service, containerService *conta
 		zoneCache:         cache.New(zoneCacheExpiration, zoneCacheCleanupInterval),
 		clusterCache:      cache.New(clusterCacheTTL, clusterCacheTTL),
 		serverConfigCache: cache.New(serverConfigCacheTTL, serverConfigCacheTTL),
+		// A numeric project ID never changes for a configured project name.
+		projectNumCache: cache.New(0, 0),
 	}
 }
 
@@ -162,6 +169,38 @@ func (p *DefaultProvider) InvalidateClusterConfig() {
 	defer p.clusterMu.Unlock()
 	p.clusterCache.Delete(clusterCacheKey)
 	p.clusterGeneration++
+}
+
+// ProjectNumber returns the numeric project number of the configured project.
+// It is immutable for the life of a project and is required to compare attested
+// VM identity evidence with the configured project.
+//
+// The number comes from the metadata server of the VM running this controller,
+// which must be in the configured project. The Compute Project resource's id is
+// a different identifier, not the project number, so it must not be used.
+func (p *DefaultProvider) ProjectNumber(ctx context.Context) (uint64, error) {
+	if v, ok := p.projectNumCache.Get(projectNumberCacheKey); ok {
+		return v.(uint64), nil
+	}
+	// GetWithContext is uncached, unlike the package's ProjectID helpers, which
+	// keep process-wide values.
+	hostProject, err := metadata.GetWithContext(ctx, "project/project-id")
+	if err != nil {
+		return 0, fmt.Errorf("reading the controller's project from the metadata server: %w", err)
+	}
+	if hostProject = strings.TrimSpace(hostProject); hostProject != p.projectID {
+		return 0, fmt.Errorf("controller runs in project %q, not the configured project %q", hostProject, p.projectID)
+	}
+	raw, err := metadata.GetWithContext(ctx, "project/numeric-project-id")
+	if err != nil {
+		return 0, fmt.Errorf("reading the project number from the metadata server: %w", err)
+	}
+	number, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
+	if err != nil || number == 0 {
+		return 0, fmt.Errorf("metadata server returned an invalid project number %q", raw)
+	}
+	p.projectNumCache.SetDefault(projectNumberCacheKey, number)
+	return number, nil
 }
 
 // ShieldedNodesEnabled reports the cluster's current Shielded GKE Nodes policy.

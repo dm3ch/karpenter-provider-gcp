@@ -125,6 +125,8 @@ func (reproGKE) GetClusterConfig(context.Context) (*container.Cluster, error) {
 	return &container.Cluster{Id: "deadbeef", NetworkConfig: &container.NetworkConfig{Network: "projects/test/global/networks/default", Subnetwork: "projects/test/regions/us-central1/subnetworks/default"}}, nil
 }
 
+func (reproGKE) ProjectNumber(context.Context) (uint64, error) { return 1, nil }
+
 func (reproGKE) GetServerConfig(context.Context) (*container.ServerConfig, error) {
 	return &container.ServerConfig{}, nil
 }

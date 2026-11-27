@@ -98,6 +98,7 @@ type Provider interface {
 	List(context.Context) ([]*Instance, error)
 	Delete(context.Context, string) error
 	CreateTags(context.Context, string, map[string]string) error
+	GetIdentity(context.Context, string, string) (*InstanceIdentity, error)
 	GetIncarnation(context.Context, string, string) (*InstanceIncarnation, error)
 }
 
@@ -531,7 +532,7 @@ func checkInstanceOwnership(instance *compute.Instance, nodeClaim *karpv1.NodeCl
 
 // launchedNumericID returns the VM's numeric instance ID only when the VM
 // carries this NodeClaim's ownership label. A name-only association is not
-// enough to record an incarnation that later checks can rely on.
+// enough to record an incarnation that attested enrollment can rely on.
 func launchedNumericID(instance *compute.Instance, nodeClaim *karpv1.NodeClaim) uint64 {
 	uid := string(nodeClaim.UID)
 	if uid == "" || instance.Labels[utils.SanitizeGCELabelValue(utils.LabelNodeClaimUIDKey)] != uid {
@@ -839,7 +840,7 @@ func (p *DefaultProvider) insertInstance(ctx context.Context, nodeClaim *karpv1.
 // readCreatedInstanceID reads the numeric instance ID of a VM whose insert
 // operations did not report one. The fetched VM must carry this NodeClaim's
 // ownership label, because a same-named replacement must never supply the
-// incarnation that later checks rely on.
+// incarnation that attested enrollment relies on.
 func (p *DefaultProvider) readCreatedInstanceID(ctx context.Context, nodeClaim *karpv1.NodeClaim, zone, name string, result *instanceInsertResult) error {
 	created, err := p.computeService.Instances.Get(p.projectID, zone, name).Context(ctx).Do()
 	if err != nil {
@@ -1798,7 +1799,7 @@ func (p *DefaultProvider) setupInstanceLabels(instance *compute.Instance, nodeCl
 	// Karpenter ownership is tracked with karpenter.sh/nodepool instead.
 	instance.Labels[utils.SanitizeGCELabelValue(v1alpha1.LabelInstanceLocalSsdCount)] = strconv.Itoa(ssdCount)
 	// Records which NodeClaim this VM was launched for. It is an ownership
-	// association under trusted provisioning IAM, not proof of who runs on the VM.
+	// association under trusted provisioning IAM, not attestation evidence.
 	if uid := string(nodeClaim.UID); uid != "" {
 		instance.Labels[utils.SanitizeGCELabelValue(utils.LabelNodeClaimUIDKey)] = uid
 	}

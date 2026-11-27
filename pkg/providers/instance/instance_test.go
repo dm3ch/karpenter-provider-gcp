@@ -775,6 +775,8 @@ func TestDelete_IssuesDeleteWhenInstanceIsRunning(t *testing.T) {
 
 type fakeGKEProvider struct {
 	zones []string
+	// projectNumber is returned by ProjectNumber; zero defaults to 1.
+	projectNumber uint64
 }
 
 func (f *fakeGKEProvider) ResolveClusterZones(context.Context) ([]string, error) {
@@ -788,6 +790,13 @@ func (f *fakeGKEProvider) GetClusterConfig(context.Context) (*containerv1.Cluste
 			Subnetwork: "projects/test-project/regions/europe-west4/subnetworks/default",
 		},
 	}, nil
+}
+
+func (f *fakeGKEProvider) ProjectNumber(context.Context) (uint64, error) {
+	if f.projectNumber != 0 {
+		return f.projectNumber, nil
+	}
+	return 1, nil
 }
 
 func (f *fakeGKEProvider) GetServerConfig(context.Context) (*containerv1.ServerConfig, error) {
@@ -1936,6 +1945,8 @@ type fakeClusterGKEProvider struct {
 func (f *fakeClusterGKEProvider) GetClusterConfig(context.Context) (*containerv1.Cluster, error) {
 	return makeCluster("projects/p/global/networks/my-vpc", "regions/us-central1/subnetworks/my-subnet", "pods", false), nil
 }
+
+func (f *fakeClusterGKEProvider) ProjectNumber(context.Context) (uint64, error) { return 1, nil }
 
 // newFakeCreateProvider returns a provider whose fake GCE API rejects an insert with the
 // reason insertError returns for its instance type and capacity type, and accepts it when
