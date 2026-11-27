@@ -83,6 +83,10 @@ updates:
     # module's deps (etcd, cel-go, grpc-gateway, ...) are the dependency
     # set matching the pinned k8s.io/* v0.30.x, and bumping them in
     # isolation is likely to break kubectl-validate v0.0.4.
+    # Security updates need a reviewed GitHub advisory, and Go advisories
+    # published only in the Go vulnerability database (e.g. GO-2026-6354,
+    # GO-2026-6603 for golang.org/x/*) have none. The "OSV" job in
+    # security.yaml flags those; bump them by hand with `go get` here.
     open-pull-requests-limit: 0
     allow:
       - dependency-type: "all"

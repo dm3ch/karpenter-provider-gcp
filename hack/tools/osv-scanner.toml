@@ -1,0 +1,13 @@
+# OSV-Scanner reads this file only for the go.mod in this directory. OpenSSF
+# Scorecard and the OSV job in .github/workflows/security.yaml both honour it.
+
+[[IgnoredVulns]]
+id = "GO-2026-6225"
+# Re-evaluate on expiry: drop the entry once ko stops depending on the
+# vulnerable helper, or stop ignoring it if a fixed version is published.
+effectiveUntil = 2027-02-25
+reason = """\
+No fixed version exists. github.com/chrismellard/docker-credential-acr-env \
+reaches this module only through ko's Azure Container Registry keychain. It \
+leaks a token when ko pushes to a host spoofing an *.azurecr.io name; this \
+project publishes to GHCR, and CI runs ko with --push=false."""
